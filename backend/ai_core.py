@@ -5,6 +5,21 @@ import json
 import insightface
 from ultralytics import YOLO
 
+# Import konfigurasi gorengan (optional)
+try:
+    from config_gorengan import (
+        GORENGAN_CLASS_MAPPING,
+        GORENGAN_MODEL_PATH,
+        GORENGAN_CONFIDENCE_THRESHOLD,
+        MIN_STOCK_THRESHOLD
+    )
+except ImportError:
+    # Default jika config tidak ada
+    GORENGAN_CLASS_MAPPING = {}
+    GORENGAN_MODEL_PATH = "models/gorengan_model.pt"
+    GORENGAN_CONFIDENCE_THRESHOLD = 0.4
+    MIN_STOCK_THRESHOLD = 3
+
 class SuperAIEngine:
     def __init__(self):
         print("⏳ [AI CORE] Initializing Super Engine (Soto Cloud x InsightFace)...")
@@ -16,7 +31,21 @@ class SuperAIEngine:
         # A. YOLO Object Detection (From Engine 1 & 2)
         # Detects: Person, Bowl, Cup, Bottle
         print("    + Loading YOLOv8 Object Detection...")
-        self.model_object = YOLO('yolov8s.pt') 
+        self.model_object = YOLO('yolov8s.pt')
+        
+        # A.1. Custom YOLO Model untuk Gorengan (Optional)
+        # Jika ada custom model untuk deteksi gorengan spesifik
+        self.model_gorengan = None
+        if os.path.exists(GORENGAN_MODEL_PATH):
+            try:
+                print("    + Loading Custom Gorengan Detection Model...")
+                self.model_gorengan = YOLO(GORENGAN_MODEL_PATH)
+                print("      > Custom gorengan model loaded successfully")
+            except Exception as e:
+                print(f"      > Failed to load custom gorengan model: {e}")
+                print("      > Will use standard object detection as fallback")
+        else:
+            print("    + Custom gorengan model not found, using standard detection") 
         
         # B. YOLO Pose Estimation (From Engine 1)
         # Detects: Hands/Wrists for Refill Logic
@@ -52,6 +81,22 @@ class SuperAIEngine:
             39: "botol", 41: "gelas", 42: "garpu", 
             43: "pisau", 44: "sendok", 45: "mangkok",
             0: "orang"
+        }
+        
+        # =====================================================
+        # 4. GORENGAN CLASS MAPPING (Custom)
+        # =====================================================
+        # Mapping untuk berbagai jenis gorengan dari config
+        self.GORENGAN_CLASSES = GORENGAN_CLASS_MAPPING.copy()
+        if len(self.GORENGAN_CLASSES) > 0:
+            print(f"    + Loaded {len(self.GORENGAN_CLASSES)} gorengan types from config")
+        
+        # Jika tidak ada custom model, gunakan deteksi umum berdasarkan bentuk/warna
+        # Mapping objek COCO yang bisa mewakili gorengan
+        self.GORENGAN_PROXY_OBJECTS = {
+            45: "mangkok",  # Bowl bisa mewakili wadah gorengan
+            41: "gelas",    # Cup bisa mewakili wadah kecil
+            # Tambahkan mapping lain jika perlu
         }
         
         print("✅ [AI CORE] Ready to process!")
@@ -116,23 +161,46 @@ class SuperAIEngine:
         # TAHAP 1: GLOBAL INFERENCE (Run Models Once)
         # =====================================================
         
-        # 1. Object Detection
+        # 1. Object Detection (Standard)
         res_obj = self.model_object(frame, verbose=False, conf=0.35)[0]
         detected_items = []
         detected_people = [] # Centroids of people
+        detected_gorengan = [] # Deteksi gorengan spesifik
         
         for box in res_obj.boxes:
             cls_id = int(box.cls[0])
             xyxy = box.xyxy[0].cpu().numpy()
             cx, cy = (xyxy[0]+xyxy[2])/2, (xyxy[1]+xyxy[3])/2
+            conf = float(box.conf[0])
             
             if cls_id == 0: # Person
                 detected_people.append((cx, cy))
             elif cls_id in self.DINING_OBJECTS:
                 detected_items.append({
                     "name": self.CLASS_MAP.get(cls_id, "unknown"),
-                    "centroid": (cx, cy)
+                    "centroid": (cx, cy),
+                    "confidence": conf
                 })
+        
+        # 1.1. Custom Gorengan Detection (Jika ada model khusus)
+        if self.model_gorengan is not None:
+            try:
+                res_gorengan = self.model_gorengan(frame, verbose=False, conf=GORENGAN_CONFIDENCE_THRESHOLD)[0]
+                for box in res_gorengan.boxes:
+                    cls_id = int(box.cls[0])
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    cx, cy = (xyxy[0]+xyxy[2])/2, (xyxy[1]+xyxy[3])/2
+                    conf = float(box.conf[0])
+                    
+                    gorengan_name = self.GORENGAN_CLASSES.get(cls_id, f"gorengan_{cls_id}")
+                    detected_gorengan.append({
+                        "name": gorengan_name,
+                        "centroid": (cx, cy),
+                        "confidence": conf,
+                        "bbox": xyxy
+                    })
+            except Exception as e:
+                print(f"      ! Error in gorengan detection: {e}")
 
         # 2. Pose Estimation (Hands)
         res_pose = self.model_pose(frame, verbose=False, conf=0.5)[0]
@@ -248,31 +316,69 @@ class SuperAIEngine:
                         is_blocked = True
                         break
                 
-                # Count stock gorengan (deteksi mangkok/piring di zona)
-                stock_count = 0
-                for item in detected_items:
-                    if self._is_point_in_zone(item['centroid'], z_coords, w, h):
-                        # Prioritaskan mangkok/piring sebagai indikator stock
-                        if item['name'] in ['mangkok', 'gelas']:
-                            stock_count += 1
+                # Count stock gorengan per jenis
+                gorengan_stock = {}  # {jenis: jumlah}
+                total_stock = 0
                 
+                # 1. Deteksi gorengan spesifik (jika ada custom model)
+                if len(detected_gorengan) > 0:
+                    for gorengan in detected_gorengan:
+                        if self._is_point_in_zone(gorengan['centroid'], z_coords, w, h):
+                            jenis = gorengan['name']
+                            gorengan_stock[jenis] = gorengan_stock.get(jenis, 0) + 1
+                            total_stock += 1
+                
+                # 2. Fallback: Deteksi wadah (mangkok/piring) sebagai indikator stock
+                # Jika tidak ada custom model atau tidak terdeteksi gorengan spesifik
+                if total_stock == 0:
+                    for item in detected_items:
+                        if self._is_point_in_zone(item['centroid'], z_coords, w, h):
+                            # Gunakan wadah sebagai proxy untuk stock
+                            if item['name'] in self.GORENGAN_PROXY_OBJECTS.values():
+                                proxy_name = f"wadah_{item['name']}"
+                                gorengan_stock[proxy_name] = gorengan_stock.get(proxy_name, 0) + 1
+                                total_stock += 1
+                
+                # State management
                 if is_blocked:
                     final_result["zone_states"][z_name] = "SEDANG_DIAMBIL"
-                elif stock_count == 0:
+                elif total_stock == 0:
                     final_result["zone_states"][z_name] = "HABIS"
                     # Alert jika stock habis
                     final_result["security_alerts"].append({
                         "type": "low_stock",
-                        "msg": f"Tempat Gorengan {z_name} perlu diisi ulang"
+                        "msg": f"Tempat Gorengan {z_name} perlu diisi ulang (Stock: 0)"
+                    })
+                elif total_stock < MIN_STOCK_THRESHOLD:
+                    # Alert jika stock rendah
+                    final_result["zone_states"][z_name] = {
+                        "total": total_stock,
+                        "detail": gorengan_stock
+                    }
+                    final_result["security_alerts"].append({
+                        "type": "low_stock",
+                        "msg": f"Tempat Gorengan {z_name} stock rendah (Stock: {total_stock}, Min: {MIN_STOCK_THRESHOLD})"
                     })
                 else:
-                    final_result["zone_states"][z_name] = stock_count
+                    # Simpan detail stock per jenis
+                    final_result["zone_states"][z_name] = {
+                        "total": total_stock,
+                        "detail": gorengan_stock
+                    }
                 
-                # Log stock untuk monitoring
+                # Log stock untuk monitoring (per jenis)
+                for jenis, jumlah in gorengan_stock.items():
+                    final_result["billing_events"].append({
+                        "zone_name": z_name,
+                        "item_name": f"GORENGAN_{jenis.upper()}",
+                        "qty": jumlah
+                    })
+                
+                # Log total stock juga
                 final_result["billing_events"].append({
                     "zone_name": z_name,
-                    "item_name": "GORENGAN_STOCK",
-                    "qty": stock_count
+                    "item_name": "GORENGAN_TOTAL_STOCK",
+                    "qty": total_stock
                 })
 
             # --- LOGIC D: REFILL (Self Service/Refill Station) ---

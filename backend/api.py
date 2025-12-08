@@ -22,12 +22,39 @@ from database import get_db_connection, init_db
 import threading
 
 # ==========================================
-# 0. SHARED FRAME CACHE (Untuk Streaming & Scheduler)
+# 0. SHARED FRAME CACHE (Untuk Streaming & Analysis)
 # ==========================================
 # Cache untuk menyimpan frame terakhir dari setiap kamera
-# Streaming endpoint akan update cache ini, scheduler akan membaca dari sini
+# Streaming endpoint akan update cache ini, analysis endpoint akan membaca dari sini
 frame_cache = {}  # {cam_id: {"frame": np.array, "timestamp": float}}
 frame_cache_lock = threading.Lock()  # Thread-safe access
+
+# ==========================================
+# 0.1. GLOBAL STATE MANAGEMENT (Untuk Zone States)
+# ==========================================
+# Global Memory untuk Timer Meja Kotor & Status Antrian
+# Format: { "Meja 1": 5, "Kasir": 3 } -> Meja 1 kotor sdh 5 detik
+global_zone_states = {}  # {zone_name: state_value}
+state_lock = threading.Lock()  # Thread-safe access
+
+# ==========================================
+# 0.2. AI ENGINE (Shared Instance)
+# ==========================================
+# Load AI Engine sekali saat startup untuk digunakan oleh semua endpoint
+_ai_engine = None
+_ai_engine_lock = threading.Lock()
+
+def get_ai_engine():
+    """Get or create AI engine instance (singleton)"""
+    global _ai_engine
+    if _ai_engine is None:
+        with _ai_engine_lock:
+            if _ai_engine is None:
+                from ai_core import SuperAIEngine
+                print("⏳ [API] Loading AI Engine...")
+                _ai_engine = SuperAIEngine()
+                print("✅ [API] AI Engine ready!")
+    return _ai_engine
 
 # ==========================================
 # 1. KONFIGURASI KEAMANAN (SECURITY CONFIG)
@@ -73,8 +100,13 @@ class UserCreate(BaseModel):
     role: str       # 'admin' atau 'staff'
     branch_id: Optional[int] = None # Wajib diisi jika role='staff'
 
+class BranchInput(BaseModel):
+    name: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+
 class CameraInput(BaseModel):
-    branch_name: str
+    branch_id: int  # ID dari tabel branches
     rtsp_url: str
 
 class ZoneInput(BaseModel):
@@ -192,6 +224,123 @@ def seed_admin_user():
 def read_users_me(current_user: dict = Depends(get_current_user)):
     return current_user
 
+@app.get("/users/")
+def get_all_users(current_user: dict = Depends(get_current_user)):
+    """Get all users (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh melihat daftar user")
+    
+    conn = get_db_connection()
+    users = conn.execute("SELECT id, username, role, branch_id FROM users ORDER BY id").fetchall()
+    conn.close()
+    
+    return [dict(u) for u in users]
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete user (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh menghapus user")
+    
+    # Jangan biarkan user menghapus dirinya sendiri
+    if current_user.get('username'):
+        conn = get_db_connection()
+        user = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+        conn.close()
+        if user and user['username'] == current_user['username']:
+            raise HTTPException(status_code=400, detail="Tidak dapat menghapus akun sendiri")
+    
+    conn = get_db_connection()
+    
+    # Cek apakah user ada
+    user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Hapus user
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "User deleted successfully"}
+
+# ==========================================
+# 4.5. ENDPOINTS: BRANCH MANAGEMENT
+# ==========================================
+
+@app.get("/branches/")
+def get_branches(current_user: dict = Depends(get_current_user)):
+    """Get all branches (master data)"""
+    conn = get_db_connection()
+    branches = conn.execute("SELECT * FROM branches WHERE is_active=1 ORDER BY name").fetchall()
+    conn.close()
+    return [dict(b) for b in branches]
+
+@app.post("/branches/")
+def create_branch(branch: BranchInput, current_user: dict = Depends(get_current_user)):
+    """Create new branch (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh menambah cabang")
+    
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "INSERT INTO branches (name, address, phone) VALUES (?, ?, ?)",
+            (branch.name, branch.address, branch.phone)
+        )
+        conn.commit()
+        branch_id = conn.lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Nama cabang sudah terdaftar")
+    finally:
+        conn.close()
+    
+    return {"status": "Branch created successfully", "id": branch_id}
+
+@app.get("/branches/{branch_id}")
+def get_branch(branch_id: int, current_user: dict = Depends(get_current_user)):
+    """Get branch by ID"""
+    conn = get_db_connection()
+    branch = conn.execute("SELECT * FROM branches WHERE id=?", (branch_id,)).fetchone()
+    conn.close()
+    
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    
+    return dict(branch)
+
+@app.delete("/branches/{branch_id}")
+def delete_branch(branch_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete branch (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh menghapus cabang")
+    
+    conn = get_db_connection()
+    
+    # Cek apakah cabang ada
+    branch = conn.execute("SELECT * FROM branches WHERE id=?", (branch_id,)).fetchone()
+    if not branch:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Branch not found")
+    
+    # Cek apakah ada kamera yang menggunakan cabang ini
+    cameras = conn.execute("SELECT COUNT(*) as count FROM cameras WHERE branch_id=?", (branch_id,)).fetchone()
+    if cameras['count'] > 0:
+        conn.close()
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cabang tidak dapat dihapus karena masih digunakan oleh {cameras['count']} kamera"
+        )
+    
+    # Soft delete (set is_active=0) atau hard delete
+    conn.execute("UPDATE branches SET is_active=0 WHERE id=?", (branch_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"status": "Branch deleted successfully"}
+
 # ==========================================
 # 5. ENDPOINTS: CAMERA MANAGEMENT
 # ==========================================
@@ -200,10 +349,20 @@ def read_users_me(current_user: dict = Depends(get_current_user)):
 def add_camera(cam: CameraInput, current_user: dict = Depends(get_current_user)):
     if current_user['role'] != 'admin':
         raise HTTPException(status_code=403, detail="Forbidden")
-        
+    
     conn = get_db_connection()
-    conn.execute("INSERT INTO cameras (branch_name, rtsp_url) VALUES (?, ?)", 
-                 (cam.branch_name, cam.rtsp_url))
+    
+    # Ambil nama cabang dari tabel branches
+    branch = conn.execute("SELECT name FROM branches WHERE id=?", (cam.branch_id,)).fetchone()
+    if not branch:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Branch not found")
+    
+    branch_name = branch['name']
+    
+    # Insert kamera dengan branch_id dan branch_name (untuk backward compatibility)
+    conn.execute("INSERT INTO cameras (branch_id, branch_name, rtsp_url) VALUES (?, ?, ?)", 
+                 (cam.branch_id, branch_name, cam.rtsp_url))
     conn.commit()
     conn.close()
     return {"status": "Camera added"}
@@ -546,8 +705,6 @@ def get_detections(cam_id: int):
     Endpoint untuk mendapatkan deteksi objek real-time dari frame cache.
     Mengembalikan koordinat dan informasi objek yang terdeteksi.
     """
-    # Import di dalam function untuk avoid circular import
-    from ai_core import SuperAIEngine
     
     # Ambil frame dari cache
     with frame_cache_lock:
@@ -578,24 +735,8 @@ def get_detections(cam_id: int):
             "coords": z["coords"]  # String JSON
         })
     
-    # Gunakan engine yang sudah diinisialisasi (dari scheduler atau buat baru)
-    # Untuk production, lebih baik inject engine sebagai dependency
-    # Coba akses engine dari scheduler jika sudah ada, jika tidak buat baru
-    engine = None
-    try:
-        import sys
-        import importlib
-        if 'scheduler' in sys.modules:
-            scheduler_module = sys.modules['scheduler']
-            if hasattr(scheduler_module, 'engine'):
-                engine = scheduler_module.engine
-        if engine is None:
-            # Jika tidak ada, buat baru (ini akan load model, jadi lebih lambat)
-            engine = SuperAIEngine()
-    except Exception as e:
-        # Jika error, buat engine baru
-        print(f"[API] Warning: Could not access scheduler engine, creating new: {e}")
-        engine = SuperAIEngine()
+    # Gunakan shared AI engine
+    engine = get_ai_engine()
     
     # Jalankan deteksi objek
     h, w = frame.shape[:2]
@@ -664,6 +805,149 @@ def get_detections(cam_id: int):
         "detections": detections,
         "frame_size": {"width": int(w), "height": int(h)},
         "detection_count": len(detections)
+    }
+
+def _analyze_camera_internal(cam_id: int):
+    """
+    Internal function untuk analyze camera tanpa auth check.
+    Digunakan oleh analyze_all dan bisa dipanggil dari background task.
+    """
+    # Ambil frame dari cache
+    with frame_cache_lock:
+        if cam_id not in frame_cache:
+            return {"status": "error", "error": "Frame not available in cache"}
+        
+        cached_data = frame_cache[cam_id]
+        frame_age = time.time() - cached_data["timestamp"]
+        if frame_age > 5.0:
+            return {"status": "error", "error": f"Frame expired (age: {frame_age:.1f}s)"}
+        
+        frame = cached_data["frame"].copy()
+    
+    # Ambil zona untuk kamera ini
+    conn = get_db_connection()
+    zones = conn.execute("SELECT * FROM zones WHERE camera_id=?", (cam_id,)).fetchall()
+    
+    if not zones:
+        conn.close()
+        return {"status": "skipped", "message": "No zones configured"}
+    
+    # Format zona untuk AI
+    zones_config = []
+    for z in zones:
+        zones_config.append({
+            "name": z["name"],
+            "type": z["type"],
+            "coords": z["coords"]
+        })
+    
+    # Ambil state sebelumnya
+    with state_lock:
+        current_states = global_zone_states.copy()
+    
+    # Get AI Engine
+    engine = get_ai_engine()
+    
+    # === RUN FULL ANALYSIS ===
+    result = engine.analyze_frame(frame, zones_config, current_states)
+    
+    if not result:
+        conn.close()
+        return {"status": "error", "error": "Analysis failed"}
+    
+    # Update global state
+    with state_lock:
+        global_zone_states.update(result["zone_states"])
+    
+    # Simpan data ke database
+    try:
+        # A. Simpan Billing
+        for bill in result["billing_events"]:
+            exist = conn.execute('''
+                SELECT id, qty FROM billing_log 
+                WHERE camera_id=? AND zone_name=? AND item_name=? 
+                AND timestamp > datetime('now', '-2 minutes')
+            ''', (cam_id, bill['zone_name'], bill['item_name'])).fetchone()
+            
+            if exist:
+                new_qty = exist['qty'] + bill['qty']
+                conn.execute("UPDATE billing_log SET qty=?, timestamp=datetime('now') WHERE id=?", 
+                           (new_qty, exist['id']))
+            else:
+                conn.execute("INSERT INTO billing_log (camera_id, zone_name, item_name, qty) VALUES (?,?,?,?)",
+                           (cam_id, bill['zone_name'], bill['item_name'], bill['qty']))
+        
+        # B. Simpan Security Alerts
+        for alert in result["security_alerts"]:
+            last_alert = conn.execute('''
+                SELECT id FROM events_log 
+                WHERE camera_id=? AND type=? AND timestamp > datetime('now', '-1 minutes')
+            ''', (cam_id, alert['type'])).fetchone()
+            
+            if not last_alert:
+                conn.execute("INSERT INTO events_log (camera_id, type, message) VALUES (?,?,?)",
+                           (cam_id, alert['type'], alert['msg']))
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return {"status": "error", "error": f"Database error: {str(e)}"}
+    
+    conn.close()
+    
+    return {
+        "status": "completed",
+        "billing_events_count": len(result["billing_events"]),
+        "alerts_count": len(result["security_alerts"]),
+        "zone_states": result["zone_states"]
+    }
+
+@app.post("/analyze/{cam_id}")
+def analyze_camera(cam_id: int, current_user: dict = Depends(get_current_user)):
+    """
+    Endpoint untuk melakukan full analysis pada kamera tertentu.
+    Menggantikan fungsi scheduler - melakukan analisis lengkap dan menyimpan ke database.
+    
+    Features:
+    - Billing detection (menyimpan ke billing_log)
+    - Security alerts (menyimpan ke events_log)
+    - Zone state management (timer meja kotor, status antrian, dll)
+    """
+    result = _analyze_camera_internal(cam_id)
+    
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("error", "Analysis failed"))
+    
+    return {
+        "status": "Analysis completed",
+        "camera_id": cam_id,
+        **result
+    }
+
+@app.post("/analyze/all")
+def analyze_all_cameras(current_user: dict = Depends(get_current_user)):
+    """
+    Endpoint untuk melakukan full analysis pada semua kamera aktif.
+    Mirip dengan fungsi patrol_all_cameras() di scheduler.
+    """
+    conn = get_db_connection()
+    cameras = conn.execute("SELECT * FROM cameras WHERE is_active=1").fetchall()
+    conn.close()
+    
+    results = []
+    for cam in cameras:
+        result = _analyze_camera_internal(cam['id'])
+        results.append({
+            "camera_id": cam['id'],
+            "branch_name": cam['branch_name'],
+            **result
+        })
+    
+    return {
+        "status": "Batch analysis completed",
+        "total_cameras": len(cameras),
+        "results": results
     }
 
 @app.get("/billing/live/{cam_id}")

@@ -11,21 +11,34 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     
-    # 1. Tabel User & Auth (Tetap dari Engine 1)
+    # 1. Tabel Master Cabang
+    conn.execute('''CREATE TABLE IF NOT EXISTS branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        address TEXT,
+        phone TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # 2. Tabel User & Auth (Tetap dari Engine 1)
     conn.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
         password_hash TEXT,
         role TEXT,
-        branch_id INTEGER
+        branch_id INTEGER,
+        FOREIGN KEY(branch_id) REFERENCES branches(id)
     )''')
     
-    # 2. Tabel Kamera & Zona (Tetap dari Engine 1)
+    # 3. Tabel Kamera & Zona (Tetap dari Engine 1)
     conn.execute('''CREATE TABLE IF NOT EXISTS cameras (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER,
         branch_name TEXT,
         rtsp_url TEXT,
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        FOREIGN KEY(branch_id) REFERENCES branches(id)
     )''')
     
     conn.execute('''CREATE TABLE IF NOT EXISTS zones (
@@ -67,6 +80,25 @@ def init_db():
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
 
+    # 4. Tabel Master Cabang (Baru)
+    conn.execute('''CREATE TABLE IF NOT EXISTS branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        address TEXT,
+        phone TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # Update tabel cameras untuk menambahkan branch_id jika belum ada
+    cursor = conn.execute("PRAGMA table_info(cameras)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'branch_id' not in columns:
+        try:
+            conn.execute("ALTER TABLE cameras ADD COLUMN branch_id INTEGER")
+        except:
+            pass  # Kolom mungkin sudah ada
+    
     conn.commit()
     conn.close()
-    print("✅ Database initialized with V6.0 Schema (Merged)")
+    print("✅ Database initialized with V6.0 Schema (Merged + Branches)")

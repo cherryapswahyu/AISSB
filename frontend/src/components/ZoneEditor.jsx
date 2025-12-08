@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { snapshotAPI, zoneAPI } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import './ZoneEditor.css';
 
 const ZoneEditor = ({ cameraId: propCameraId }) => {
   const { id } = useParams(); // Ambil ID kamera dari URL params
   // Gunakan URL params jika ada, jika tidak gunakan props (backward compatibility)
   const cameraId = id ? parseInt(id, 10) : propCameraId;
+  const { user, isAdmin } = useAuth();
 
   const canvasRef = useRef(null);
   const [image, setImage] = useState(null);
@@ -19,6 +21,7 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [zoneName, setZoneName] = useState('');
   const [zoneType, setZoneType] = useState('table');
+  const [saving, setSaving] = useState(false);
 
   // Fetch snapshot dari backend
   useEffect(() => {
@@ -58,11 +61,13 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
   };
 
   const loadSavedZones = async () => {
+    if (!cameraId) return;
     try {
       const data = await zoneAPI.getByCamera(cameraId);
       setSavedZones(data || []);
     } catch (error) {
       console.error('Gagal memuat zones:', error);
+      setError('Gagal memuat zona: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -185,10 +190,32 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
 
   // Handle save zone
   const handleSaveZone = async () => {
-    if (!zoneName.trim() || !currentRect) return;
+    if (!zoneName.trim() || !currentRect) {
+      alert('Nama zona harus diisi dan zona harus digambar terlebih dahulu');
+      return;
+    }
+
+    if (!cameraId) {
+      alert('Camera ID tidak valid');
+      return;
+    }
+
+    // Cek apakah user adalah admin (hanya admin yang bisa save zone)
+    if (!isAdmin) {
+      const errorMsg = 'Hanya Admin yang dapat menyimpan zona. Role Anda: ' + (user?.role || 'Unknown');
+      setError(errorMsg);
+      alert(errorMsg);
+      return;
+    }
 
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      alert('Canvas tidak tersedia');
+      return;
+    }
+
+    setSaving(true);
+    setError('');
 
     // Konversi koordinat pixel ke persentase (0.0 - 1.0)
     const x1_pct = currentRect.x / canvas.width;
@@ -197,21 +224,42 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
     const y2_pct = (currentRect.y + currentRect.height) / canvas.height;
 
     try {
-      await zoneAPI.create({
+      console.log('Saving zone:', {
         camera_id: cameraId,
         name: zoneName.trim(),
         type: zoneType,
         coords: [x1_pct, y1_pct, x2_pct, y2_pct],
       });
 
+      const result = await zoneAPI.create({
+        camera_id: cameraId,
+        name: zoneName.trim(),
+        type: zoneType,
+        coords: [x1_pct, y1_pct, x2_pct, y2_pct],
+      });
+
+      console.log('Zone saved successfully:', result);
+
       // Reset form dan reload zones
       setZoneName('');
       setZoneType('table');
       setCurrentRect(null);
       setShowSaveDialog(false);
-      loadSavedZones();
+      await loadSavedZones();
+
+      // Redraw canvas setelah reload zones
+      setTimeout(() => {
+        if (image) {
+          drawCanvas();
+        }
+      }, 100);
     } catch (error) {
-      alert('Gagal menyimpan zona: ' + (error.response?.data?.detail || error.message));
+      console.error('Error saving zone:', error);
+      const errorMessage = error.response?.data?.detail || error.message || 'Gagal menyimpan zona';
+      setError(errorMessage);
+      alert('Gagal menyimpan zona: ' + errorMessage);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -220,6 +268,8 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
     setShowSaveDialog(false);
     setZoneName('');
     setZoneType('table');
+    setError('');
+    setSaving(false);
   };
 
   const handleDeleteZone = async (zoneId) => {
@@ -281,23 +331,62 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
         <div className="save-dialog-overlay" onClick={handleCancelSave}>
           <div className="save-dialog" onClick={(e) => e.stopPropagation()}>
             <h4>Simpan Zona Baru</h4>
+            {error && (
+              <div className="error-message" style={{ marginBottom: '15px', padding: '10px', background: '#fee', color: '#c33', borderRadius: '4px', fontSize: '14px' }}>
+                {error}
+              </div>
+            )}
+            {!currentRect && (
+              <div style={{ marginBottom: '15px', padding: '10px', background: '#fff3cd', color: '#856404', borderRadius: '4px', fontSize: '14px' }}>
+                ⚠️ Zona belum digambar. Silakan gambar zona terlebih dahulu dengan klik dan drag pada canvas.
+              </div>
+            )}
+            {currentRect && (
+              <div style={{ marginBottom: '15px', padding: '8px', background: '#e7f3ff', color: '#0066cc', borderRadius: '4px', fontSize: '12px' }}>
+                ✓ Zona sudah digambar ({Math.round(currentRect.width)}x{Math.round(currentRect.height)} px)
+                <br />
+                <small>
+                  Camera ID: {cameraId} | User: {user?.username} ({user?.role})
+                </small>
+              </div>
+            )}
+            {!isAdmin && <div style={{ marginBottom: '15px', padding: '10px', background: '#fee', color: '#c33', borderRadius: '4px', fontSize: '14px' }}>⚠️ Hanya Admin yang dapat menyimpan zona. Role Anda: {user?.role || 'Unknown'}</div>}
             <div className="form-group">
               <label htmlFor="zone-name">Nama Zona</label>
-              <input type="text" id="zone-name" value={zoneName} onChange={(e) => setZoneName(e.target.value)} placeholder="Contoh: Meja 1" autoFocus />
+              <input
+                type="text"
+                id="zone-name"
+                value={zoneName}
+                onChange={(e) => {
+                  setZoneName(e.target.value);
+                  setError(''); // Clear error saat user mengetik
+                }}
+                placeholder="Contoh: Meja 1"
+                autoFocus
+                disabled={saving}
+              />
             </div>
             <div className="form-group">
               <label htmlFor="zone-type">Tipe</label>
-              <select id="zone-type" value={zoneType} onChange={(e) => setZoneType(e.target.value)}>
+              <select id="zone-type" value={zoneType} onChange={(e) => setZoneType(e.target.value)} disabled={saving}>
                 <option value="table">Meja</option>
                 <option value="gorengan">Tempat Gorengan</option>
                 <option value="kasir">Kasir</option>
               </select>
             </div>
             <div className="dialog-actions">
-              <button onClick={handleSaveZone} className="save-button" disabled={!zoneName.trim()}>
-                Simpan
+              <button
+                onClick={handleSaveZone}
+                className="save-button"
+                disabled={!zoneName.trim() || saving || !currentRect || !isAdmin}
+                style={{
+                  opacity: !zoneName.trim() || saving || !currentRect || !isAdmin ? 0.5 : 1,
+                  cursor: !zoneName.trim() || saving || !currentRect || !isAdmin ? 'not-allowed' : 'pointer',
+                }}
+                title={!isAdmin ? 'Hanya Admin yang dapat menyimpan zona' : !zoneName.trim() ? 'Nama zona harus diisi' : !currentRect ? 'Zona harus digambar terlebih dahulu' : saving ? 'Menyimpan...' : 'Simpan zona'}>
+                {saving ? 'Menyimpan...' : 'Simpan'}
               </button>
-              <button onClick={handleCancelSave} className="cancel-button">
+              <button onClick={handleCancelSave} className="cancel-button" disabled={saving}>
                 Batal
               </button>
             </div>

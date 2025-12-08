@@ -160,4 +160,55 @@ export const detectionAPI = {
   },
 };
 
+export const analysisAPI = {
+  analyzeCamera: async (cameraId) => {
+    const response = await api.post(`/analyze/${cameraId}`);
+    return response.data;
+  },
+
+  analyzeAll: async () => {
+    const response = await api.post('/analyze/all');
+    return response.data;
+  },
+};
+
+export const userAPI = {
+  getAll: async () => {
+    const response = await api.get('/users/');
+    return response.data;
+  },
+
+  create: async (userData) => {
+    const response = await api.post('/users/', userData);
+    return response.data;
+  },
+
+  delete: async (userId) => {
+    const response = await api.delete(`/users/${userId}`);
+    return response.data;
+  },
+};
+
+export const branchAPI = {
+  getAll: async () => {
+    const response = await api.get('/branches/');
+    return response.data;
+  },
+
+  create: async (branchData) => {
+    const response = await api.post('/branches/', branchData);
+    return response.data;
+  },
+
+  getById: async (branchId) => {
+    const response = await api.get(`/branches/${branchId}`);
+    return response.data;
+  },
+
+  delete: async (branchId) => {
+    const response = await api.delete(`/branches/${branchId}`);
+    return response.data;
+  },
+};
+
 export default api;
