@@ -80,7 +80,7 @@ class CameraInput(BaseModel):
 class ZoneInput(BaseModel):
     camera_id: int
     name: str
-    type: str       # 'table' atau 'refill'
+    type: str       # 'table', 'kasir', 'gorengan', 'refill', 'queue', 'restricted'
     coords: list[float] # [x1, y1, x2, y2]
 
 # ==========================================

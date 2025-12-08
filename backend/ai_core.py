@@ -168,7 +168,7 @@ class SuperAIEngine:
         
         for zone in zones_config:
             z_name = zone['name']
-            z_type = zone['type'] # 'table', 'queue', 'restricted', 'refill'
+            z_type = zone['type'] # 'table', 'kasir', 'gorengan', 'refill', 'queue', 'restricted'
             
             # Parse JSON coords from DB
             try:
@@ -222,8 +222,8 @@ class SuperAIEngine:
                 
                 final_result["zone_states"][z_name] = new_timer
 
-            # --- LOGIC B: QUEUE / KASIR (Crowd Control) ---
-            elif z_type == 'queue':
+            # --- LOGIC B: KASIR / QUEUE (Crowd Control) ---
+            elif z_type == 'kasir' or z_type == 'queue':
                 queue_count = 0
                 for p_loc in detected_people:
                     if self._is_point_in_zone(p_loc, z_coords, w, h):
@@ -239,7 +239,43 @@ class SuperAIEngine:
                 
                 final_result["zone_states"][z_name] = queue_count
 
-            # --- LOGIC C: REFILL (Gorengan/Self Service) ---
+            # --- LOGIC C: GORENGAN (Tempat Gorengan) ---
+            elif z_type == 'gorengan':
+                # Check for Hands (Deteksi aktivitas mengambil)
+                is_blocked = False
+                for hand in detected_hands:
+                    if self._is_point_in_zone(hand, z_coords, w, h):
+                        is_blocked = True
+                        break
+                
+                # Count stock gorengan (deteksi mangkok/piring di zona)
+                stock_count = 0
+                for item in detected_items:
+                    if self._is_point_in_zone(item['centroid'], z_coords, w, h):
+                        # Prioritaskan mangkok/piring sebagai indikator stock
+                        if item['name'] in ['mangkok', 'gelas']:
+                            stock_count += 1
+                
+                if is_blocked:
+                    final_result["zone_states"][z_name] = "SEDANG_DIAMBIL"
+                elif stock_count == 0:
+                    final_result["zone_states"][z_name] = "HABIS"
+                    # Alert jika stock habis
+                    final_result["security_alerts"].append({
+                        "type": "low_stock",
+                        "msg": f"Tempat Gorengan {z_name} perlu diisi ulang"
+                    })
+                else:
+                    final_result["zone_states"][z_name] = stock_count
+                
+                # Log stock untuk monitoring
+                final_result["billing_events"].append({
+                    "zone_name": z_name,
+                    "item_name": "GORENGAN_STOCK",
+                    "qty": stock_count
+                })
+
+            # --- LOGIC D: REFILL (Self Service/Refill Station) ---
             elif z_type == 'refill':
                 # Check for Hands (Anti-Galau Logic)
                 is_blocked = False
@@ -265,7 +301,7 @@ class SuperAIEngine:
                         "qty": stock_count
                     })
 
-            # --- LOGIC D: RESTRICTED (Kitchen Security) ---
+            # --- LOGIC E: RESTRICTED (Kitchen Security) ---
             elif z_type == 'restricted':
                 unknown_intruder = False
                 staff_detected = False

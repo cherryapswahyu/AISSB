@@ -89,12 +89,28 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
         const x2 = x2_pct * canvas.width;
         const y2 = y2_pct * canvas.height;
 
-        ctx.strokeStyle = zone.type === 'table' ? '#00ff00' : '#ff0000';
+        // Tentukan warna berdasarkan tipe zona
+        let strokeColor, fillColor;
+        if (zone.type === 'table') {
+          strokeColor = '#00ff00'; // Hijau untuk Meja
+          fillColor = '#00ff00';
+        } else if (zone.type === 'gorengan') {
+          strokeColor = '#ffa500'; // Oranye untuk Tempat Gorengan
+          fillColor = '#ffa500';
+        } else if (zone.type === 'kasir') {
+          strokeColor = '#0000ff'; // Biru untuk Kasir
+          fillColor = '#0000ff';
+        } else {
+          strokeColor = '#800080'; // Ungu untuk tipe lainnya
+          fillColor = '#800080';
+        }
+
+        ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 2;
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
 
         // Draw label
-        ctx.fillStyle = zone.type === 'table' ? '#00ff00' : '#ff0000';
+        ctx.fillStyle = fillColor;
         ctx.font = '14px Arial';
         ctx.fillText(zone.name, x1, y1 - 5);
       }
@@ -235,7 +251,9 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
           <p>
             <strong>Instruksi:</strong> Klik dan drag pada gambar untuk membuat zona baru
           </p>
-          <p>Hijau = Meja (Table), Merah = Refill</p>
+          <p>
+            <span style={{ color: '#00ff00' }}>●</span> Hijau = Meja |<span style={{ color: '#ffa500' }}> ●</span> Oranye = Tempat Gorengan |<span style={{ color: '#0000ff' }}> ●</span> Biru = Kasir
+          </p>
         </div>
       </div>
 
@@ -270,8 +288,9 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
             <div className="form-group">
               <label htmlFor="zone-type">Tipe</label>
               <select id="zone-type" value={zoneType} onChange={(e) => setZoneType(e.target.value)}>
-                <option value="table">Table (Meja)</option>
-                <option value="refill">Refill</option>
+                <option value="table">Meja</option>
+                <option value="gorengan">Tempat Gorengan</option>
+                <option value="kasir">Kasir</option>
               </select>
             </div>
             <div className="dialog-actions">
