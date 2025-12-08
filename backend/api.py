@@ -2,20 +2,45 @@ import cv2
 import json
 import sqlite3
 import numpy as np
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, List
 
 # Library FastAPI
-from fastapi import FastAPI, HTTPException, Depends, status, Response
+from fastapi import FastAPI, HTTPException, Depends, status, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import time
+import os
+import asyncio
+from collections import defaultdict
 
 # Library Security
 from jose import JWTError, jwt
+
+# Import passlib dengan patch untuk bypass detect_wrap_bug
+# Error terjadi saat passlib mencoba detect bug dengan password panjang (>72 bytes)
+# Solusi: Patch detect_wrap_bug SEBELUM CryptContext digunakan
+try:
+    import passlib.handlers.bcrypt as bcrypt_module
+    # Patch detect_wrap_bug untuk selalu return False (skip bug detection)
+    # Ini harus dilakukan sebelum backend di-set
+    if hasattr(bcrypt_module, 'detect_wrap_bug'):
+        bcrypt_module.detect_wrap_bug = lambda ident: False
+except:
+    pass
+
+# Import CryptContext setelah patch
 from passlib.context import CryptContext
+
+# Patch lagi setelah import untuk memastikan
+try:
+    import passlib.handlers.bcrypt as bcrypt_module
+    bcrypt_module.detect_wrap_bug = lambda ident: False
+except:
+    pass
 
 # Import Database Lokal
 from database import get_db_connection, init_db
@@ -30,12 +55,47 @@ frame_cache = {}  # {cam_id: {"frame": np.array, "timestamp": float}}
 frame_cache_lock = threading.Lock()  # Thread-safe access
 
 # ==========================================
+# 0.4. WEBSOCKET CONNECTION MANAGER (Untuk Real-time Detection)
+# ==========================================
+# Manager untuk menyimpan koneksi WebSocket aktif per kamera
+websocket_connections = defaultdict(set)  # {cam_id: set(websocket_connections)}
+websocket_lock = threading.Lock()
+
+# Cache untuk deteksi terakhir per kamera (untuk WebSocket)
+detection_cache = {}  # {cam_id: detection_data}
+detection_cache_lock = threading.Lock()
+
+# Cache untuk zone states, billing, dan alerts per kamera (untuk WebSocket)
+zone_states_cache = {}  # {cam_id: zone_states_data}
+billing_cache = {}  # {cam_id: billing_data}
+alerts_cache = {}  # {cam_id: alerts_data}
+data_cache_lock = threading.Lock()
+
+# ==========================================
+# 0.3. BACKGROUND CAMERA THREADS (Auto Detection)
+# ==========================================
+# Thread untuk setiap kamera yang membaca frame secara kontinyu di background
+camera_threads = {}  # {cam_id: threading.Thread}
+camera_threads_lock = threading.Lock()
+camera_threads_running = {}  # {cam_id: bool} - Flag untuk stop thread
+background_service_enabled = True  # Flag untuk enable/disable background service
+background_service_lock = threading.Lock()  # Lock untuk thread-safe access
+
+# ==========================================
 # 0.1. GLOBAL STATE MANAGEMENT (Untuk Zone States)
 # ==========================================
 # Global Memory untuk Timer Meja Kotor & Status Antrian
 # Format: { "Meja 1": 5, "Kasir": 3 } -> Meja 1 kotor sdh 5 detik
 global_zone_states = {}  # {zone_name: state_value}
 state_lock = threading.Lock()  # Thread-safe access
+
+# ==========================================
+# 0.1.1. TRACKING DURASI (Untuk Laporan)
+# ==========================================
+# Tracking start time untuk meja terisi dan antrian penuh
+table_occupancy_tracking = {}  # {zone_name: {"start_time": datetime, "camera_id": int, "person_count": int}}
+queue_tracking = {}  # {zone_name: {"start_time": datetime, "camera_id": int, "queue_count": int}}
+tracking_lock = threading.Lock()  # Thread-safe access
 
 # ==========================================
 # 0.2. AI ENGINE (Shared Instance)
@@ -64,6 +124,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token berlaku 24 Jam
 
 # Setup Password Hashing (Bcrypt)
+# Environment variable sudah di-set di atas sebelum import passlib
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Setup OAuth2 (Endpoint untuk login adalah /token)
@@ -84,7 +145,34 @@ app.add_middleware(
 # Init Database saat server nyala
 @app.on_event("startup")
 def startup_event():
-    init_db()
+    # Pastikan patch detect_wrap_bug diterapkan sebelum backend di-set
+    try:
+        import passlib.handlers.bcrypt as bcrypt_module
+        bcrypt_module.detect_wrap_bug = lambda ident: False
+    except:
+        pass
+    
+    try:
+        init_db()
+        print("[Startup] Database initialized")
+    except Exception as e:
+        print(f"[Startup] Error initializing database: {e}")
+    
+    # Start background detection service
+    try:
+        start_background_detection_service()
+        print("[Startup] Background detection service started")
+    except Exception as e:
+        print(f"[Startup] Error starting background service: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print("[Startup] ✅ Server startup completed!")
+
+@app.on_event("shutdown")
+def shutdown_event():
+    # Stop semua background threads saat server shutdown
+    stop_all_camera_threads()
 
 # ==========================================
 # 2. MODEL DATA (PYDANTIC SCHEMAS)
@@ -120,9 +208,51 @@ class ZoneInput(BaseModel):
 # ==========================================
 
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    """
+    Verify password dengan bcrypt.
+    Konsisten dengan get_password_hash - jika password > 72 bytes, hash dengan SHA256 dulu.
+    """
+    password_bytes = plain_password.encode('utf-8')
+    
+    # Jika password lebih dari 72 bytes, hash dengan SHA256 dulu (konsisten dengan get_password_hash)
+    if len(password_bytes) > 72:
+        plain_password = hashlib.sha256(password_bytes).hexdigest()
+    
+    # Gunakan try-except untuk menangani error detect_wrap_bug
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except ValueError as e:
+        # Jika error karena detect_wrap_bug, coba patch dan retry
+        if "cannot be longer than 72 bytes" in str(e) or "detect_wrap_bug" in str(e):
+            try:
+                # Patch detect_wrap_bug
+                import passlib.handlers.bcrypt as bcrypt_module
+                bcrypt_module.detect_wrap_bug = lambda ident: False
+                # Retry verify
+                return pwd_context.verify(plain_password, hashed_password)
+            except:
+                # Jika masih error, gunakan bcrypt langsung sebagai fallback
+                import bcrypt
+                try:
+                    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+                except:
+                    # Jika hash tidak valid, return False
+                    return False
+        raise
 
 def get_password_hash(password):
+    """
+    Hash password dengan bcrypt.
+    Bcrypt memiliki batasan maksimal 72 bytes.
+    Jika password lebih panjang, hash dulu dengan SHA256 untuk mendapatkan fixed-length (64 chars).
+    """
+    password_bytes = password.encode('utf-8')
+    
+    # Jika password lebih dari 72 bytes, hash dengan SHA256 dulu
+    # SHA256 menghasilkan 64 karakter hex (32 bytes), jadi aman untuk bcrypt
+    if len(password_bytes) > 72:
+        password = hashlib.sha256(password_bytes).hexdigest()
+    
     return pwd_context.hash(password)
 
 def create_access_token(data: dict):
@@ -159,6 +289,75 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 # ==========================================
 # 4. ENDPOINTS: AUTHENTICATION
 # ==========================================
+
+# ==========================================
+# 10. ENDPOINTS: BACKGROUND SERVICE CONTROL
+# ==========================================
+
+@app.get("/background-service/status")
+def get_background_service_status(current_user: dict = Depends(get_current_user)):
+    """Get status background detection service (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh melihat status service")
+    
+    with background_service_lock:
+        enabled = background_service_enabled
+    
+    # Hitung jumlah thread yang aktif
+    with camera_threads_lock:
+        active_threads = sum(1 for t in camera_threads.values() if t.is_alive())
+        total_threads = len(camera_threads)
+    
+    return {
+        "enabled": enabled,
+        "active_threads": active_threads,
+        "total_threads": total_threads,
+        "status": "running" if enabled else "stopped"
+    }
+
+@app.post("/background-service/enable")
+def enable_background_service(current_user: dict = Depends(get_current_user)):
+    """Enable background detection service (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh mengaktifkan service")
+    
+    global background_service_enabled
+    with background_service_lock:
+        if background_service_enabled:
+            return {"status": "already_enabled", "message": "Background service sudah aktif"}
+        
+        background_service_enabled = True
+        print("[Background] Service enabled by admin")
+    
+    # Restart camera threads jika belum berjalan
+    start_background_detection_service()
+    
+    return {
+        "status": "enabled",
+        "message": "Background detection service diaktifkan"
+    }
+
+@app.post("/background-service/disable")
+def disable_background_service(current_user: dict = Depends(get_current_user)):
+    """Disable background detection service (hanya admin)"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Hanya Admin boleh menonaktifkan service")
+    
+    global background_service_enabled
+    with background_service_lock:
+        if not background_service_enabled:
+            return {"status": "already_disabled", "message": "Background service sudah nonaktif"}
+        
+        background_service_enabled = False
+        print("[Background] Service disabled by admin")
+    
+    # Stop semua camera threads
+    stop_all_camera_threads()
+    
+    return {
+        "status": "disabled",
+        "message": "Background detection service dinonaktifkan"
+    }
 
 @app.post("/token", response_model=Token)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -498,7 +697,8 @@ def get_camera_snapshot(cam_id: int):
 def stream_camera(cam_id: int):
     """
     MJPEG Streaming endpoint untuk Live Monitor.
-    Mengirim frames secara kontinyu dalam format multipart/x-mixed-replace.
+    Menggunakan frame dari cache yang sudah dibaca oleh background service.
+    TIDAK membuka kamera sendiri untuk menghindari konflik dengan background service.
     """
     conn = get_db_connection()
     cam = conn.execute("SELECT rtsp_url FROM cameras WHERE id=?", (cam_id,)).fetchone()
@@ -507,123 +707,83 @@ def stream_camera(cam_id: int):
     if not cam:
         raise HTTPException(404, "Camera not found")
     
-    url = cam['rtsp_url']
-    # Fix Webcam Laptop (String vs Int)
-    if str(url).isdigit():
-        url = int(url)
-    
     def generate_frames():
-        cap = None
-        retry_count = 0
-        max_retries = 3
+        last_timestamp = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 30  # 30 frame tanpa update = 1 detik
         
-        while retry_count < max_retries:
+        while True:
             try:
-                # Coba buka kamera
-                # Untuk webcam Windows, coba DirectShow dulu, jika gagal fallback ke default
-                if isinstance(url, int):
-                    # Coba DirectShow dulu
-                    cap = cv2.VideoCapture(url, cv2.CAP_DSHOW)
-                    if not cap.isOpened():
-                        # Jika DirectShow gagal, coba default backend
-                        cap = cv2.VideoCapture(url)
-                else:
-                    cap = cv2.VideoCapture(url)
+                # Ambil frame dari cache (yang sudah dibaca oleh background service)
+                frame = None
+                frame_timestamp = 0
                 
-                if not cap.isOpened():
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        # Kirim error frame
+                with frame_cache_lock:
+                    if cam_id in frame_cache:
+                        cached_data = frame_cache[cam_id]
+                        frame_timestamp = cached_data["timestamp"]
+                        frame_age = time.time() - frame_timestamp
+                        
+                        # Hanya gunakan frame yang masih fresh (kurang dari 2 detik untuk lebih responsif)
+                        if frame_age < 2.0:
+                            frame = cached_data["frame"].copy()
+                
+                if frame is None:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        # Kirim error frame jika tidak ada frame dari cache
                         error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                        cv2.putText(error_frame, "Camera not available", (50, 240), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                        cv2.putText(error_frame, "Waiting for camera...", (50, 220), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+                        cv2.putText(error_frame, "Background service starting", (50, 260), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                         success, img_encoded = cv2.imencode(".jpg", error_frame)
                         if success:
                             yield (b'--frame\r\n'
                                    b'Content-Type: image/jpeg\r\n\r\n' + 
                                    img_encoded.tobytes() + b'\r\n')
-                        time.sleep(1)
-                        continue
-                    time.sleep(1)  # Tunggu sebelum retry
+                    # Tunggu sebentar sebelum cek lagi (lebih cepat untuk responsif)
+                    # Gunakan delay yang sama dengan frame rate untuk konsistensi
+                    time.sleep(0.05)
                     continue
                 
-                # Reset retry count jika berhasil
-                retry_count = 0
-                
-                # Set buffer size kecil untuk mengurangi delay
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
-                # Buang beberapa frame pertama untuk clear buffer
-                for _ in range(3):
-                    cap.grab()
-                
+                # Reset error count jika dapat frame
                 consecutive_errors = 0
-                max_consecutive_errors = 10
                 
-                while True:
-                    ret, frame = cap.read()
-                    
-                    if not ret:
-                        consecutive_errors += 1
-                        if consecutive_errors >= max_consecutive_errors:
-                            # Kamera terputus, coba reconnect
-                            print(f"[Stream {cam_id}] Camera disconnected, attempting reconnect...")
-                            break
-                        time.sleep(0.1)
-                        continue
-                    
-                    consecutive_errors = 0
-                    
-                    # Update shared frame cache untuk scheduler
-                    with frame_cache_lock:
-                        frame_cache[cam_id] = {
-                            "frame": frame.copy(),  # Copy untuk thread safety
-                            "timestamp": time.time()
-                        }
-                    
-                    # Encode frame ke JPEG
-                    success, img_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if not success:
-                        continue
-                    
+                # Encode dan kirim frame (kirim setiap frame yang ada di cache untuk smooth streaming)
+                # Tidak perlu cek timestamp karena cache sudah di-update dengan frame terbaru
+                # Optimasi encoding: kurangi kualitas lebih agresif untuk encoding lebih cepat
+                # Kualitas 50 sudah cukup untuk streaming dan jauh lebih cepat dari 65
+                success, img_encoded = cv2.imencode(".jpg", frame, [
+                    cv2.IMWRITE_JPEG_QUALITY, 50,
+                    cv2.IMWRITE_JPEG_OPTIMIZE, 1  # Optimasi ukuran file
+                ])
+                if success:
                     # Format MJPEG: multipart boundary
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + 
                            img_encoded.tobytes() + b'\r\n')
-                    
-                    # Delay untuk frame rate (sekitar 30 FPS)
-                    time.sleep(0.033)
                 
-                # Jika keluar dari loop, release dan coba reconnect
-                if cap:
-                    cap.release()
-                    cap = None
-                time.sleep(1)  # Tunggu sebelum reconnect
+                # Delay untuk frame rate (sekitar 20 FPS untuk stabilitas encoding)
+                # Frame rate lebih rendah untuk memastikan encoding selesai sebelum frame berikutnya
+                # 20 FPS sudah cukup smooth dan lebih stabil dari 30 FPS
+                time.sleep(0.05)
                 
             except Exception as e:
                 print(f"[Stream {cam_id}] Error: {e}")
-                if cap:
-                    cap.release()
-                    cap = None
-                retry_count += 1
-                if retry_count < max_retries:
-                    time.sleep(2)  # Tunggu lebih lama sebelum retry
-                else:
-                    # Kirim error frame setelah semua retry gagal
-                    try:
-                        error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                        cv2.putText(error_frame, f"Camera Error: {str(e)[:30]}", (20, 220), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        cv2.putText(error_frame, "Check camera connection", (20, 260), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        success, img_encoded = cv2.imencode(".jpg", error_frame)
-                        if success:
-                            yield (b'--frame\r\n'
-                                   b'Content-Type: image/jpeg\r\n\r\n' + 
-                                   img_encoded.tobytes() + b'\r\n')
-                    except:
-                        pass
-                    time.sleep(1)
+                # Kirim error frame
+                try:
+                    error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(error_frame, f"Stream Error: {str(e)[:30]}", (20, 220), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    success, img_encoded = cv2.imencode(".jpg", error_frame)
+                    if success:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + 
+                               img_encoded.tobytes() + b'\r\n')
+                except:
+                    pass
+                time.sleep(1)
     
     return StreamingResponse(
         generate_frames(),
@@ -699,23 +859,21 @@ def get_frame_from_cache(cam_id: int):
     # Jika tidak ada di cache atau sudah expired, return 404
     raise HTTPException(status_code=404, detail="Frame not available in cache. Start streaming first.")
 
-@app.get("/detections/{cam_id}")
-def get_detections(cam_id: int):
+def _get_detections_internal(cam_id: int):
     """
-    Endpoint untuk mendapatkan deteksi objek real-time dari frame cache.
-    Mengembalikan koordinat dan informasi objek yang terdeteksi.
+    Internal function untuk mendapatkan deteksi objek dari frame cache.
+    Digunakan oleh endpoint HTTP dan WebSocket.
+    Returns None jika frame tidak tersedia atau expired.
     """
-    
     # Ambil frame dari cache
     with frame_cache_lock:
         if cam_id not in frame_cache:
-            raise HTTPException(status_code=404, detail="Frame not available in cache. Start streaming first.")
+            return None
         
         cached_data = frame_cache[cam_id]
         frame_age = time.time() - cached_data["timestamp"]
-        # Kurangi timeout menjadi 2 detik untuk memastikan frame lebih fresh (real-time)
-        if frame_age > 2.0:
-            raise HTTPException(status_code=404, detail=f"Frame expired (age: {frame_age:.1f}s). Start streaming first.")
+        if frame_age > 5.0:
+            return None
         
         # Ambil frame terbaru (copy untuk thread safety)
         frame = cached_data["frame"].copy()
@@ -798,14 +956,540 @@ def get_detections(cam_id: int):
             
             detections.append(detection)
     
-    return {
+    result = {
         "camera_id": cam_id,
         "timestamp": time.time(),
-        "frame_timestamp": cached_data["timestamp"],  # Timestamp frame yang digunakan
+        "frame_timestamp": frame_timestamp,
         "detections": detections,
         "frame_size": {"width": int(w), "height": int(h)},
         "detection_count": len(detections)
     }
+    
+    # Update detection cache
+    with detection_cache_lock:
+        detection_cache[cam_id] = result
+    
+    return result
+
+@app.get("/detections/{cam_id}")
+def get_detections(cam_id: int):
+    """
+    Endpoint untuk mendapatkan deteksi objek real-time dari frame cache.
+    Mengembalikan koordinat dan informasi objek yang terdeteksi.
+    """
+    result = _get_detections_internal(cam_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Frame not available in cache. Start streaming first.")
+    return result
+
+@app.websocket("/ws/detections/{cam_id}")
+async def websocket_detections(websocket: WebSocket, cam_id: int):
+    """
+    WebSocket endpoint untuk deteksi real-time.
+    Client akan menerima update deteksi setiap 1-2 detik secara real-time.
+    """
+    await websocket.accept()
+    
+    # Tambahkan koneksi ke manager
+    with websocket_lock:
+        websocket_connections[cam_id].add(websocket)
+    
+    print(f"[WebSocket] Client connected for camera {cam_id}")
+    
+    try:
+        # Kirim deteksi terakhir dari cache jika ada
+        with detection_cache_lock:
+            if cam_id in detection_cache:
+                await websocket.send_json(detection_cache[cam_id])
+        
+        # Keep connection alive dan kirim update
+        while True:
+            # Kirim deteksi terbaru dari cache atau lakukan deteksi baru
+            result = None
+            with detection_cache_lock:
+                if cam_id in detection_cache:
+                    # Cek apakah cache masih fresh (kurang dari 2 detik)
+                    cache_age = time.time() - detection_cache[cam_id].get("timestamp", 0)
+                    if cache_age < 2.0:
+                        result = detection_cache[cam_id]
+            
+            # Jika cache tidak fresh, lakukan deteksi baru
+            if result is None:
+                result = _get_detections_internal(cam_id)
+            
+            if result:
+                try:
+                    await websocket.send_json(result)
+                except:
+                    break
+            
+            # Tunggu ping dari client atau timeout
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.5)
+            except asyncio.TimeoutError:
+                pass
+            except:
+                break
+            
+    except WebSocketDisconnect:
+        print(f"[WebSocket] Client disconnected for camera {cam_id}")
+    except Exception as e:
+        print(f"[WebSocket] Error for camera {cam_id}: {e}")
+    finally:
+        # Hapus koneksi dari manager
+        with websocket_lock:
+            websocket_connections[cam_id].discard(websocket)
+            if len(websocket_connections[cam_id]) == 0:
+                del websocket_connections[cam_id]
+
+@app.websocket("/ws/data/{cam_id}")
+async def websocket_data(websocket: WebSocket, cam_id: int):
+    """
+    WebSocket endpoint untuk zone states, billing, dan alerts real-time.
+    Client akan menerima update setiap 1-2 detik secara real-time.
+    """
+    await websocket.accept()
+    
+    print(f"[WebSocket] Client connected for data (zone states, billing, alerts) camera {cam_id}")
+    
+    try:
+        # Initialize cache dengan data default jika belum ada
+        with data_cache_lock:
+            if cam_id not in zone_states_cache:
+                # Ambil zones dari database dan buat default states
+                conn = get_db_connection()
+                zones = conn.execute("SELECT name, type FROM zones WHERE camera_id=?", (cam_id,)).fetchall()
+                conn.close()
+                
+                default_zone_states = {}
+                for z in zones:
+                    default_zone_states[z['name']] = {
+                        "status": "UNKNOWN",
+                        "timer": 0,
+                        "zone_type": z['type']
+                    }
+                
+                zone_states_cache[cam_id] = {
+                    "camera_id": cam_id,
+                    "zone_states": default_zone_states,
+                    "timestamp": time.time()
+                }
+        
+        # Kirim data terakhir dari cache jika ada
+        with data_cache_lock:
+            # Pastikan selalu kirim zone_states yang ada, tidak peduli fresh atau tidak
+            zone_states_data = {}
+            if cam_id in zone_states_cache:
+                cache_data = zone_states_cache[cam_id]
+                zone_states_data = cache_data.get("zone_states", {})
+            
+            data = {
+                "type": "data_update",
+                "camera_id": cam_id,
+                "zone_states": zone_states_data,
+                "billing": billing_cache.get(cam_id, []),
+                "alerts": alerts_cache.get(cam_id, []),
+                "timestamp": time.time()
+            }
+            await websocket.send_json(data)
+        
+        # Keep connection alive dan kirim update
+        while True:
+            # Ambil data terbaru dari cache
+            with data_cache_lock:
+                # Ambil zone_states dari cache (selalu kirim data terakhir yang ada)
+                # Ini mencegah status zona hilang-hilangan - tidak pernah kirim empty object
+                zone_states_data = {}
+                if cam_id in zone_states_cache:
+                    cache_data = zone_states_cache[cam_id]
+                    # Selalu ambil data terakhir yang ada, tidak peduli umur cache
+                    # Ini memastikan status zona tidak pernah hilang
+                    zone_states_data = cache_data.get("zone_states", {})
+                
+                data = {
+                    "type": "data_update",
+                    "camera_id": cam_id,
+                    "zone_states": zone_states_data,
+                    "billing": billing_cache.get(cam_id, []),
+                    "alerts": alerts_cache.get(cam_id, []),
+                    "timestamp": time.time()
+                }
+            
+            try:
+                await websocket.send_json(data)
+            except:
+                break
+            
+            # Tunggu ping dari client atau timeout
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.5)
+            except asyncio.TimeoutError:
+                pass
+            except:
+                break
+            
+    except WebSocketDisconnect:
+        print(f"[WebSocket] Client disconnected for data camera {cam_id}")
+    except Exception as e:
+        print(f"[WebSocket] Error for data camera {cam_id}: {e}")
+    finally:
+        pass
+
+def _camera_frame_reader_thread(cam_id: int, rtsp_url: str):
+    """
+    Background thread untuk membaca frame dari kamera secara kontinyu.
+    Frame akan disimpan ke cache untuk digunakan oleh deteksi AI.
+    """
+    print(f"[Background] Starting frame reader for camera {cam_id}")
+    cap = None
+    retry_count = 0
+    max_retries = 3
+    
+    # Fix Webcam URL (String vs Int)
+    url = rtsp_url
+    if url.isdigit():
+        url = int(url)
+    
+    while camera_threads_running.get(cam_id, True):
+        try:
+            # Coba buka kamera
+            if isinstance(url, int):
+                cap = cv2.VideoCapture(url, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(url)
+            else:
+                cap = cv2.VideoCapture(url)
+            
+            if not cap.isOpened():
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"[Background] Camera {cam_id} failed to open, retrying... ({retry_count}/{max_retries})")
+                    time.sleep(2)
+                    continue
+                else:
+                    print(f"[Background] Camera {cam_id} failed to open after {max_retries} retries")
+                    # Simpan error frame ke cache
+                    error_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(error_frame, f"Camera {cam_id} Error", (20, 220), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    with frame_cache_lock:
+                        frame_cache[cam_id] = {
+                            "frame": error_frame,
+                            "timestamp": time.time()
+                        }
+                    time.sleep(5)  # Tunggu sebelum retry lagi
+                    retry_count = 0
+                    continue
+            
+            retry_count = 0
+            consecutive_errors = 0
+            max_consecutive_errors = 10
+            
+            # Optimasi kamera untuk low latency
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer untuk mengurangi delay
+            cap.set(cv2.CAP_PROP_FPS, 20)  # Set FPS target ke 20 untuk stabilitas
+            # Buang beberapa frame pertama untuk clear buffer lama
+            for _ in range(5):
+                cap.grab()
+            
+            print(f"[Background] Camera {cam_id} connected, reading frames...")
+            
+            while camera_threads_running.get(cam_id, True):
+                ret, frame = cap.read()
+                
+                if not ret:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"[Background] Camera {cam_id} disconnected, attempting reconnect...")
+                        break
+                    # Tunggu sebentar sebelum retry (lebih cepat untuk smooth streaming)
+                    time.sleep(0.05)
+                    continue
+                
+                consecutive_errors = 0
+                
+                # Resize frame untuk mempercepat encoding dan mengurangi bandwidth
+                # Resize ke maksimal 960x540 untuk encoding lebih cepat dan bandwidth lebih efisien
+                # Resolusi ini masih cukup untuk monitoring dan jauh lebih cepat dari 1280x720
+                h, w = frame.shape[:2]
+                if w > 960 or h > 540:
+                    scale = min(960.0 / w, 540.0 / h)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    # Gunakan INTER_AREA untuk resize down (lebih cepat dan lebih baik untuk downsampling)
+                    frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                
+                # Update frame cache (dengan timestamp yang lebih presisi)
+                current_time = time.time()
+                with frame_cache_lock:
+                    frame_cache[cam_id] = {
+                        "frame": frame.copy(),
+                        "timestamp": current_time
+                    }
+                
+                # Frame rate control (sekitar 20 FPS untuk stabilitas)
+                # Frame rate lebih rendah untuk memastikan encoding selesai sebelum frame berikutnya
+                # 20 FPS sudah cukup smooth dan lebih stabil dari 30 FPS
+                time.sleep(0.05)
+            
+            # Release dan reconnect
+            if cap:
+                cap.release()
+                cap = None
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"[Background] Camera {cam_id} error: {e}")
+            if cap:
+                cap.release()
+                cap = None
+            time.sleep(2)
+    
+    print(f"[Background] Frame reader for camera {cam_id} stopped")
+    if cap:
+        cap.release()
+
+def _detection_worker_thread():
+    """
+    Background worker thread yang menjalankan deteksi AI secara periodik
+    untuk semua kamera aktif yang memiliki frame di cache.
+    """
+    print("[Background] Starting detection worker thread...")
+    detection_interval = 1.5  # Deteksi setiap 1.5 detik untuk real-time (sebelumnya 5 detik)
+    
+    while True:
+        try:
+            # Check jika service disabled
+            with background_service_lock:
+                if not background_service_enabled:
+                    time.sleep(1)  # Sleep pendek jika disabled
+                    continue
+            
+            # Ambil semua kamera aktif dari database
+            conn = get_db_connection()
+            cameras = conn.execute(
+                "SELECT id FROM cameras WHERE is_active = 1"
+            ).fetchall()
+            conn.close()
+            
+            # Jalankan deteksi untuk setiap kamera yang memiliki frame di cache
+            with frame_cache_lock:
+                available_cameras = list(frame_cache.keys())
+            
+            for cam_row in cameras:
+                cam_id = cam_row['id']
+                
+                # Skip jika frame tidak tersedia
+                if cam_id not in available_cameras:
+                    continue
+                
+                # Cek apakah frame masih fresh (kurang dari 10 detik)
+                with frame_cache_lock:
+                    if cam_id not in frame_cache:
+                        continue
+                    cached_data = frame_cache[cam_id]
+                    frame_age = time.time() - cached_data["timestamp"]
+                    if frame_age > 10.0:
+                        continue
+                
+                # Double check service masih enabled sebelum deteksi
+                with background_service_lock:
+                    if not background_service_enabled:
+                        break
+                
+                # Jalankan deteksi (non-blocking, catch error agar tidak crash thread)
+                try:
+                    result = _analyze_camera_internal(cam_id)
+                    if result.get("status") == "error":
+                        print(f"[Background] Detection error for camera {cam_id}: {result.get('error')}")
+                except Exception as e:
+                    print(f"[Background] Exception during detection for camera {cam_id}: {e}")
+            
+            # Sleep sebelum deteksi berikutnya
+            time.sleep(detection_interval)
+            
+        except Exception as e:
+            print(f"[Background] Detection worker error: {e}")
+            time.sleep(detection_interval)
+
+def _realtime_detection_worker_thread():
+    """
+    Background thread untuk deteksi real-time yang update detection cache.
+    Berjalan lebih cepat (1-2 detik) dibanding background detection worker (5 detik).
+    Hanya berjalan untuk kamera yang memiliki WebSocket connections aktif.
+    WebSocket endpoint akan membaca dari cache ini dan mengirim ke client.
+    """
+    print("[Realtime] Starting real-time detection worker thread...")
+    detection_interval = 1.5  # Deteksi setiap 1.5 detik untuk real-time
+    
+    while True:
+        try:
+            # Check jika service disabled
+            with background_service_lock:
+                if not background_service_enabled:
+                    time.sleep(1)
+                    continue
+            
+            # Ambil semua kamera yang memiliki WebSocket connections
+            with websocket_lock:
+                active_cameras = list(websocket_connections.keys())
+            
+            if not active_cameras:
+                time.sleep(2)  # Jika tidak ada koneksi, sleep lebih lama
+                continue
+            
+            # Jalankan deteksi untuk setiap kamera yang memiliki WebSocket connection
+            for cam_id in active_cameras:
+                # Cek apakah frame tersedia
+                with frame_cache_lock:
+                    if cam_id not in frame_cache:
+                        continue
+                    cached_data = frame_cache[cam_id]
+                    frame_age = time.time() - cached_data["timestamp"]
+                    if frame_age > 5.0:
+                        continue
+                
+                # Jalankan deteksi dan update cache
+                # WebSocket endpoint akan membaca dari cache ini
+                try:
+                    result = _get_detections_internal(cam_id)
+                    # _get_detections_internal sudah update detection_cache
+                except Exception as e:
+                    print(f"[Realtime] Exception during detection for camera {cam_id}: {e}")
+            
+            time.sleep(detection_interval)
+            
+        except Exception as e:
+            print(f"[Realtime] Detection worker error: {e}")
+            time.sleep(detection_interval)
+
+def start_background_detection_service():
+    """
+    Start background service untuk deteksi otomatis.
+    - Membaca frame dari semua kamera aktif secara kontinyu
+    - Menjalankan deteksi AI secara periodik
+    """
+    try:
+        print("[Background] Starting background detection service...")
+        
+        # Start detection worker thread
+        try:
+            detection_thread = threading.Thread(target=_detection_worker_thread, daemon=True)
+            detection_thread.start()
+            print("[Background] Detection worker thread started")
+        except Exception as e:
+            print(f"[Background] Error starting detection worker thread: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Start real-time detection worker thread untuk WebSocket
+        try:
+            realtime_thread = threading.Thread(target=_realtime_detection_worker_thread, daemon=True)
+            realtime_thread.start()
+            print("[Background] Real-time detection worker thread started")
+        except Exception as e:
+            print(f"[Background] Error starting real-time detection worker thread: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Start frame reader threads untuk semua kamera aktif
+        def start_camera_threads():
+            try:
+                conn = get_db_connection()
+                cameras = conn.execute(
+                    "SELECT id, rtsp_url FROM cameras WHERE is_active = 1"
+                ).fetchall()
+                conn.close()
+                
+                print(f"[Background] Found {len(cameras)} active cameras")
+                
+                for cam in cameras:
+                    try:
+                        cam_id = cam['id']
+                        rtsp_url = cam['rtsp_url']
+                        
+                        # Skip jika thread sudah berjalan
+                        with camera_threads_lock:
+                            if cam_id in camera_threads and camera_threads[cam_id].is_alive():
+                                print(f"[Background] Camera {cam_id} thread already running, skipping")
+                                continue
+                            
+                            # Set flag running
+                            camera_threads_running[cam_id] = True
+                            
+                            # Start thread
+                            thread = threading.Thread(
+                                target=_camera_frame_reader_thread,
+                                args=(cam_id, rtsp_url),
+                                daemon=True
+                            )
+                            thread.start()
+                            camera_threads[cam_id] = thread
+                            print(f"[Background] Started frame reader thread for camera {cam_id}")
+                    except Exception as e:
+                        print(f"[Background] Error starting thread for camera {cam_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+            except Exception as e:
+                print(f"[Background] Error in start_camera_threads: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Start camera threads
+        start_camera_threads()
+        
+        # Start monitor thread untuk mengecek kamera baru yang ditambahkan
+        def monitor_new_cameras():
+            while True:
+                time.sleep(30)  # Cek setiap 30 detik
+                try:
+                    conn = get_db_connection()
+                    cameras = conn.execute(
+                        "SELECT id, rtsp_url FROM cameras WHERE is_active = 1"
+                    ).fetchall()
+                    conn.close()
+                    
+                    for cam in cameras:
+                        cam_id = cam['id']
+                        with camera_threads_lock:
+                            # Start thread jika belum ada atau sudah mati
+                            if cam_id not in camera_threads or not camera_threads[cam_id].is_alive():
+                                if cam_id not in camera_threads_running or not camera_threads_running.get(cam_id, False):
+                                    camera_threads_running[cam_id] = True
+                                    rtsp_url = cam['rtsp_url']
+                                    thread = threading.Thread(
+                                        target=_camera_frame_reader_thread,
+                                        args=(cam_id, rtsp_url),
+                                        daemon=True
+                                    )
+                                    thread.start()
+                                    camera_threads[cam_id] = thread
+                                    print(f"[Background] Started frame reader thread for new camera {cam_id}")
+                except Exception as e:
+                    print(f"[Background] Monitor error: {e}")
+        
+        try:
+            monitor_thread = threading.Thread(target=monitor_new_cameras, daemon=True)
+            monitor_thread.start()
+            print("[Background] Camera monitor thread started")
+        except Exception as e:
+            print(f"[Background] Error starting monitor thread: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print("[Background] ✅ Background detection service started successfully!")
+    except Exception as e:
+        print(f"[Background] ❌ Fatal error starting background service: {e}")
+        import traceback
+        traceback.print_exc()
+
+def stop_all_camera_threads():
+    """Stop semua background camera threads"""
+    print("[Background] Stopping all camera threads...")
+    with camera_threads_lock:
+        for cam_id in list(camera_threads_running.keys()):
+            camera_threads_running[cam_id] = False
+    print("[Background] All camera threads stopped")
 
 def _analyze_camera_internal(cam_id: int):
     """
@@ -855,9 +1539,111 @@ def _analyze_camera_internal(cam_id: int):
         conn.close()
         return {"status": "error", "error": "Analysis failed"}
     
-    # Update global state
+    # Update global state dan tracking durasi
+    previous_states_copy = {}
     with state_lock:
+        previous_states_copy = global_zone_states.copy()
         global_zone_states.update(result["zone_states"])
+    
+    # Tracking durasi meja terisi dan antrian penuh
+    current_time = datetime.now()
+    
+    with tracking_lock:
+        # Track meja terisi
+        for zone_name, new_state in result["zone_states"].items():
+            # Cek apakah ini zone table
+            zone_info = next((z for z in zones_config if z['name'] == zone_name), None)
+            if not zone_info or zone_info.get('type') != 'table':
+                continue
+            
+            prev_state = previous_states_copy.get(zone_name, {})
+            prev_status = prev_state.get('status', 'UNKNOWN') if isinstance(prev_state, dict) else 'UNKNOWN'
+            new_status = new_state.get('status', 'UNKNOWN') if isinstance(new_state, dict) else 'UNKNOWN'
+            
+            # Meja baru terisi (status berubah ke TERISI)
+            if new_status == 'TERISI' and prev_status != 'TERISI':
+                table_occupancy_tracking[zone_name] = {
+                    "start_time": current_time,
+                    "camera_id": cam_id,
+                    "person_count": new_state.get('person_count', 1) if isinstance(new_state, dict) else 1
+                }
+            
+            # Meja baru kosong (status berubah dari TERISI ke BERSIH/KOTOR)
+            elif prev_status == 'TERISI' and new_status != 'TERISI':
+                if zone_name in table_occupancy_tracking:
+                    tracking_data = table_occupancy_tracking[zone_name]
+                    start_time = tracking_data["start_time"]
+                    duration = (current_time - start_time).total_seconds()
+                    
+                    # Simpan ke database (conn masih terbuka dari awal function)
+                    try:
+                        conn.execute('''
+                            INSERT INTO table_occupancy_log 
+                            (camera_id, zone_name, start_time, end_time, duration_seconds, person_count, status)
+                            VALUES (?, ?, ?, ?, ?, ?, 'completed')
+                        ''', (cam_id, zone_name, start_time, current_time, int(duration), tracking_data["person_count"]))
+                    except Exception as e:
+                        print(f"[Tracking] Error saving table occupancy log: {e}")
+                    
+                    del table_occupancy_tracking[zone_name]
+            
+            # Update person_count jika masih terisi
+            elif new_status == 'TERISI' and zone_name in table_occupancy_tracking:
+                table_occupancy_tracking[zone_name]["person_count"] = new_state.get('person_count', 1) if isinstance(new_state, dict) else 1
+        
+        # Track antrian penuh
+        for zone_name, new_state in result["zone_states"].items():
+            # Cek apakah ini zone kasir/queue
+            zone_info = next((z for z in zones_config if z['name'] == zone_name), None)
+            if not zone_info or zone_info.get('type') not in ['kasir', 'queue']:
+                continue
+            
+            # Get queue count
+            queue_count = 0
+            if isinstance(new_state, dict):
+                queue_count = new_state.get('person_count', 0)
+            elif isinstance(new_state, (int, float)):
+                queue_count = int(new_state)
+            
+            prev_state = previous_states_copy.get(zone_name, {})
+            prev_count = 0
+            if isinstance(prev_state, dict):
+                prev_count = prev_state.get('person_count', 0)
+            elif isinstance(prev_state, (int, float)):
+                prev_count = int(prev_state)
+            
+            QUEUE_LIMIT = 4
+            
+            # Antrian baru penuh (count > 4 dan sebelumnya <= 4)
+            if queue_count > QUEUE_LIMIT and prev_count <= QUEUE_LIMIT:
+                queue_tracking[zone_name] = {
+                    "start_time": current_time,
+                    "camera_id": cam_id,
+                    "queue_count": queue_count
+                }
+            
+            # Antrian tidak penuh lagi (count <= 4 dan sebelumnya > 4)
+            elif queue_count <= QUEUE_LIMIT and prev_count > QUEUE_LIMIT:
+                if zone_name in queue_tracking:
+                    tracking_data = queue_tracking[zone_name]
+                    start_time = tracking_data["start_time"]
+                    duration = (current_time - start_time).total_seconds()
+                    
+                    # Simpan ke database (conn masih terbuka dari awal function)
+                    try:
+                        conn.execute('''
+                            INSERT INTO queue_log 
+                            (camera_id, zone_name, start_time, end_time, duration_seconds, max_queue_count, status)
+                            VALUES (?, ?, ?, ?, ?, ?, 'completed')
+                        ''', (cam_id, zone_name, start_time, current_time, int(duration), tracking_data["queue_count"]))
+                    except Exception as e:
+                        print(f"[Tracking] Error saving queue log: {e}")
+                    
+                    del queue_tracking[zone_name]
+            
+            # Update queue_count jika masih penuh
+            elif queue_count > QUEUE_LIMIT and zone_name in queue_tracking:
+                queue_tracking[zone_name]["queue_count"] = max(queue_tracking[zone_name]["queue_count"], queue_count)
     
     # Simpan data ke database
     try:
@@ -888,6 +1674,32 @@ def _analyze_camera_internal(cam_id: int):
                 conn.execute("INSERT INTO events_log (camera_id, type, message) VALUES (?,?,?)",
                            (cam_id, alert['type'], alert['msg']))
         
+        # Ambil data terbaru untuk cache sebelum commit
+        billing_rows = conn.execute('''
+            SELECT zone_name, item_name, qty, timestamp
+            FROM (
+                SELECT zone_name, item_name, qty, timestamp,
+                       ROW_NUMBER() OVER (PARTITION BY zone_name, item_name ORDER BY timestamp DESC) as rn
+                FROM billing_log 
+                WHERE camera_id = ? AND timestamp > datetime('now', '-10 minutes')
+            ) 
+            WHERE rn = 1
+            ORDER BY timestamp DESC
+            LIMIT 20
+        ''', (cam_id,)).fetchall()
+        
+        alerts_rows = conn.execute('''
+            SELECT type, message, timestamp 
+            FROM events_log 
+            WHERE camera_id = ? 
+            AND timestamp > datetime('now', '-10 minutes')
+            ORDER BY timestamp DESC
+            LIMIT 20
+        ''', (cam_id,)).fetchall()
+        
+        # Ambil zones untuk zone states cache
+        zones = conn.execute("SELECT name, type FROM zones WHERE camera_id=?", (cam_id,)).fetchall()
+        
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -895,6 +1707,61 @@ def _analyze_camera_internal(cam_id: int):
         return {"status": "error", "error": f"Database error: {str(e)}"}
     
     conn.close()
+    
+    # Update cache untuk WebSocket real-time
+    with data_cache_lock:
+        # Update zone states cache (gunakan global_zone_states yang sudah di-update)
+        with state_lock:
+            camera_zone_states = {}
+            zone_types = {z['name']: z['type'] for z in zones}
+            
+            for zone_name in [z['name'] for z in zones]:
+                if zone_name in global_zone_states:
+                    state = global_zone_states[zone_name]
+                    if isinstance(state, dict):
+                        camera_zone_states[zone_name] = {
+                            **state,
+                            "zone_type": zone_types.get(zone_name, "unknown")
+                        }
+                    else:
+                        camera_zone_states[zone_name] = {
+                            "status": "UNKNOWN",
+                            "timer": state if isinstance(state, (int, float)) else 0,
+                            "zone_type": zone_types.get(zone_name, "unknown")
+                        }
+                else:
+                    camera_zone_states[zone_name] = {
+                        "status": "UNKNOWN",
+                        "timer": 0,
+                        "zone_type": zone_types.get(zone_name, "unknown")
+                    }
+        
+        zone_states_cache[cam_id] = {
+            "camera_id": cam_id,
+            "zone_states": camera_zone_states,
+            "timestamp": time.time()
+        }
+        
+        # Update billing cache
+        billing_data = []
+        for row in billing_rows:
+            billing_data.append({
+                "zone": row['zone_name'],
+                "item": row['item_name'],
+                "qty": row['qty'],
+                "time": row['timestamp']
+            })
+        billing_cache[cam_id] = billing_data
+        
+        # Update alerts cache
+        alerts_data = []
+        for row in alerts_rows:
+            alerts_data.append({
+                "type": row['type'],
+                "message": row['message'],
+                "timestamp": row['timestamp']
+            })
+        alerts_cache[cam_id] = alerts_data
     
     return {
         "status": "completed",
@@ -985,4 +1852,85 @@ def get_live_billing(cam_id: int):
             "time": row['timestamp']      # Waktu
         })
         
+    return results
+
+@app.get("/zones/states/{cam_id}")
+def get_zone_states(cam_id: int, current_user: dict = Depends(get_current_user)):
+    """
+    Get current zone states (dirty table timers, queue counts, gorengan stock, etc.)
+    Returns status untuk setiap zone di kamera ini.
+    """
+    # Ambil daftar zones untuk kamera ini
+    conn = get_db_connection()
+    zones = conn.execute("SELECT name, type FROM zones WHERE camera_id=?", (cam_id,)).fetchall()
+    conn.close()
+    
+    if not zones:
+        return {
+            "camera_id": cam_id,
+            "zone_states": {},
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    zone_names = [z['name'] for z in zones]
+    zone_types = {z['name']: z['type'] for z in zones}
+    
+    # Ambil states dari global_zone_states
+    with state_lock:
+        camera_states = {}
+        for zone_name in zone_names:
+            if zone_name in global_zone_states:
+                state = global_zone_states[zone_name]
+                # Format state untuk frontend
+                if isinstance(state, dict):
+                    camera_states[zone_name] = {
+                        **state,
+                        "zone_type": zone_types.get(zone_name, "unknown")
+                    }
+                else:
+                    # Backward compatibility: jika masih integer
+                    camera_states[zone_name] = {
+                        "status": "UNKNOWN",
+                        "timer": state if isinstance(state, (int, float)) else 0,
+                        "zone_type": zone_types.get(zone_name, "unknown")
+                    }
+            else:
+                # Default state jika belum ada
+                camera_states[zone_name] = {
+                    "status": "UNKNOWN",
+                    "timer": 0,
+                    "zone_type": zone_types.get(zone_name, "unknown")
+                }
+    
+    return {
+        "camera_id": cam_id,
+        "zone_states": camera_states,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/events/{cam_id}")
+def get_events(cam_id: int, current_user: dict = Depends(get_current_user)):
+    """
+    Get recent events/alerts (dirty_table, long_queue, low_stock, intruder, etc.)
+    Returns alerts dari 10 menit terakhir.
+    """
+    conn = get_db_connection()
+    events = conn.execute('''
+        SELECT type, message, timestamp 
+        FROM events_log 
+        WHERE camera_id = ? 
+        AND timestamp > datetime('now', '-10 minutes')
+        ORDER BY timestamp DESC
+        LIMIT 20
+    ''', (cam_id,)).fetchall()
+    conn.close()
+    
+    results = []
+    for event in events:
+        results.append({
+            "type": event['type'],
+            "message": event['message'],
+            "timestamp": event['timestamp']
+        })
+    
     return results

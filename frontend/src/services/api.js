@@ -211,4 +211,57 @@ export const branchAPI = {
   },
 };
 
+export const backgroundServiceAPI = {
+  getStatus: async () => {
+    const response = await api.get('/background-service/status');
+    return response.data;
+  },
+
+  enable: async () => {
+    const response = await api.post('/background-service/enable');
+    return response.data;
+  },
+
+  disable: async () => {
+    const response = await api.post('/background-service/disable');
+    return response.data;
+  },
+};
+
+export const zoneStateAPI = {
+  getStates: async (cameraId) => {
+    const response = await api.get(`/zones/states/${cameraId}`);
+    return response.data;
+  },
+};
+
+export const eventsAPI = {
+  getEvents: async (cameraId) => {
+    const response = await api.get(`/events/${cameraId}`);
+    return response.data;
+  },
+};
+
+export const reportsAPI = {
+  getTableOccupancy: async (cameraId = null, startDate = null, endDate = null) => {
+    const params = new URLSearchParams();
+    if (cameraId) params.append('camera_id', cameraId);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+
+    const response = await api.get(`/reports/table-occupancy?${params.toString()}`);
+    return response.data;
+  },
+
+  getQueueReport: async (cameraId = null, startDate = null, endDate = null) => {
+    const params = new URLSearchParams();
+    if (cameraId) params.append('camera_id', cameraId);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+
+    const response = await api.get(`/reports/queue?${params.toString()}`);
+    return response.data;
+  },
+};
+
 export default api;

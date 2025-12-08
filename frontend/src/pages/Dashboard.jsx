@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import LiveMonitor from '../components/LiveMonitor';
 import CameraManager from '../components/CameraManager';
 import UserManager from '../components/UserManager';
 import BranchManager from '../components/BranchManager';
-import { Box, AppBar, Toolbar, Typography, Button, Grid, Card, CardContent, CardActions, Alert, CircularProgress } from '@mui/material';
-import { CameraAlt, List, Logout, ArrowBack, Analytics, PlayArrow, People, Store } from '@mui/icons-material';
-import { analysisAPI } from '../services/api';
+import Reports from '../components/Reports';
+import { Box, AppBar, Toolbar, Typography, Button, Grid, Card, CardContent, CardActions, Alert, CircularProgress, Switch, FormControlLabel } from '@mui/material';
+import { CameraAlt, List, Logout, ArrowBack, Analytics, PlayArrow, People, Store, Settings, Assessment } from '@mui/icons-material';
+import { analysisAPI, backgroundServiceAPI } from '../services/api';
 
 const Dashboard = () => {
   const { user, logout } = useAuth();
@@ -15,6 +16,8 @@ const Dashboard = () => {
   const [activeView, setActiveView] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [backgroundServiceStatus, setBackgroundServiceStatus] = useState(null);
+  const [backgroundServiceLoading, setBackgroundServiceLoading] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -31,6 +34,10 @@ const Dashboard = () => {
 
   const handleListCabang = () => {
     setActiveView('branch-manager');
+  };
+
+  const handleReports = () => {
+    setActiveView('reports');
   };
 
   const handleLiveMonitor = (cameraId) => {
@@ -65,8 +72,49 @@ const Dashboard = () => {
     }
   };
 
+  // Load background service status
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      loadBackgroundServiceStatus();
+      // Refresh status setiap 5 detik
+      const interval = setInterval(loadBackgroundServiceStatus, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [user?.role]);
+
+  const loadBackgroundServiceStatus = async () => {
+    try {
+      const status = await backgroundServiceAPI.getStatus();
+      setBackgroundServiceStatus(status);
+    } catch (error) {
+      console.error('Gagal memuat status background service:', error);
+    }
+  };
+
+  const handleToggleBackgroundService = async () => {
+    if (!backgroundServiceStatus) return;
+
+    setBackgroundServiceLoading(true);
+    try {
+      if (backgroundServiceStatus.enabled) {
+        await backgroundServiceAPI.disable();
+      } else {
+        await backgroundServiceAPI.enable();
+      }
+      // Reload status setelah toggle
+      await loadBackgroundServiceStatus();
+    } catch (error) {
+      setAnalysisResult({
+        type: 'error',
+        message: 'Gagal mengubah status background service: ' + (error.response?.data?.detail || error.message),
+      });
+    } finally {
+      setBackgroundServiceLoading(false);
+    }
+  };
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', minHeight: '100vh' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', minHeight: '100vh', position: 'relative', zIndex: 1 }}>
       <AppBar position="static" elevation={2}>
         <Toolbar>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
@@ -100,6 +148,13 @@ const Dashboard = () => {
                 Kembali ke Dashboard
               </Button>
               <BranchManager />
+            </Box>
+          ) : activeView === 'reports' ? (
+            <Box>
+              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
+                Kembali ke Dashboard
+              </Button>
+              <Reports />
             </Box>
           ) : activeView?.startsWith('live-monitor-') ? (
             <Box sx={{ width: '100%' }}>
@@ -188,6 +243,41 @@ const Dashboard = () => {
                     <CardActions>
                       <Button fullWidth variant="contained" startIcon={<Store />} onClick={handleListCabang}>
                         Buka
+                      </Button>
+                    </CardActions>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <Card elevation={3}>
+                    <CardContent>
+                      <Settings sx={{ fontSize: 48, color: backgroundServiceStatus?.enabled ? 'success.main' : 'error.main', mb: 2 }} />
+                      <Typography variant="h6" component="h2" gutterBottom>
+                        Background Service
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        {backgroundServiceStatus?.enabled ? `Aktif - ${backgroundServiceStatus.active_threads || 0} thread berjalan` : 'Nonaktif - Deteksi otomatis dimatikan'}
+                      </Typography>
+                      <FormControlLabel
+                        control={<Switch checked={backgroundServiceStatus?.enabled || false} onChange={handleToggleBackgroundService} disabled={backgroundServiceLoading || !backgroundServiceStatus} color="primary" />}
+                        label={backgroundServiceStatus?.enabled ? 'Aktif' : 'Nonaktif'}
+                      />
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <Card elevation={3}>
+                    <CardContent>
+                      <Assessment sx={{ fontSize: 48, color: 'info.main', mb: 2 }} />
+                      <Typography variant="h6" component="h2" gutterBottom>
+                        Laporan & Analitik
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Lihat laporan meja terisi, antrian penuh, dan statistik lainnya
+                      </Typography>
+                    </CardContent>
+                    <CardActions>
+                      <Button fullWidth variant="contained" color="info" startIcon={<Assessment />} onClick={handleReports}>
+                        Buka Laporan
                       </Button>
                     </CardActions>
                   </Card>

@@ -79,7 +79,35 @@ def init_db():
         zone_name TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
-
+    
+    # --- BARU: TABEL TABLE OCCUPANCY LOG (Tracking Durasi Meja Terisi) ---
+    # Menyimpan log durasi meja terisi (start time, end time, duration)
+    conn.execute('''CREATE TABLE IF NOT EXISTS table_occupancy_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_id INTEGER,
+        zone_name TEXT,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME,
+        duration_seconds INTEGER,
+        person_count INTEGER DEFAULT 1,
+        status TEXT DEFAULT 'completed',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # --- BARU: TABEL QUEUE LOG (Tracking Durasi Antrian Penuh) ---
+    # Menyimpan log durasi antrian penuh (start time, end time, duration)
+    conn.execute('''CREATE TABLE IF NOT EXISTS queue_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_id INTEGER,
+        zone_name TEXT,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME,
+        duration_seconds INTEGER,
+        max_queue_count INTEGER,
+        status TEXT DEFAULT 'completed',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
     # 4. Tabel Master Cabang (Baru)
     conn.execute('''CREATE TABLE IF NOT EXISTS branches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

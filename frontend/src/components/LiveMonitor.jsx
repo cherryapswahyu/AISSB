@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { snapshotAPI, billingAPI, detectionAPI, zoneAPI } from '../services/api';
+import { snapshotAPI, billingAPI, detectionAPI, zoneAPI, zoneStateAPI } from '../services/api';
 import { Box, Grid, Paper, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, CircularProgress, Alert, Chip, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
-import { Videocam, Receipt, ExpandMore, LocationOn } from '@mui/icons-material';
+import { Videocam, Receipt, ExpandMore, LocationOn, Warning, CheckCircle, Person, TableRestaurant, Queue } from '@mui/icons-material';
 
 const LiveMonitor = ({ branchId }) => {
   const [imageUrl, setImageUrl] = useState('');
@@ -11,8 +11,11 @@ const LiveMonitor = ({ branchId }) => {
   const [detections, setDetections] = useState([]);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const [savedZones, setSavedZones] = useState([]);
+  const [zoneStates, setZoneStates] = useState({});
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const wsRef = useRef(null);
+  const wsDataRef = useRef(null);
 
   // Setup streaming video (MJPEG)
   useEffect(() => {
@@ -35,7 +38,7 @@ const LiveMonitor = ({ branchId }) => {
     }
   };
 
-  // Load detections dari API
+  // Load detections dari API (fallback jika WebSocket tidak tersedia)
   const loadDetections = async () => {
     try {
       const data = await detectionAPI.getDetections(branchId);
@@ -60,6 +63,68 @@ const LiveMonitor = ({ branchId }) => {
       console.error('Gagal memuat zones:', err);
       setSavedZones([]);
     }
+  };
+
+  // Load zone states dari API
+  const loadZoneStates = async () => {
+    try {
+      const data = await zoneStateAPI.getStates(branchId);
+      setZoneStates(data.zone_states || {});
+    } catch (err) {
+      console.error('Gagal memuat zone states:', err);
+      setZoneStates({});
+    }
+  };
+
+  // Helper function untuk interpretasi status meja
+  const getTableStatusInfo = (zoneState) => {
+    if (!zoneState) return null;
+
+    // Handle backward compatibility (jika masih integer)
+    if (typeof zoneState === 'number') {
+      if (zoneState === 0) return { label: 'Bersih', color: 'success', icon: <CheckCircle /> };
+      if (zoneState > 3) return { label: `Kotor (${zoneState * 5}s)`, color: 'error', icon: <Warning /> };
+      return { label: 'Unknown', color: 'default', icon: null };
+    }
+
+    // Handle new format (object)
+    if (typeof zoneState === 'object' && zoneState.status) {
+      const statusMap = {
+        TERISI: { label: 'Terisi', color: 'info', icon: <Person />, description: `${zoneState.person_count} orang, ${zoneState.item_count} items` },
+        KOTOR: {
+          label: zoneState.needs_cleaning ? `Kotor - Perlu Dibersihkan!` : `Kotor (${zoneState.timer * 5}s)`,
+          color: zoneState.needs_cleaning ? 'error' : 'warning',
+          icon: <Warning />,
+          description: `${zoneState.item_count} items tersisa`,
+        },
+        BERSIH: { label: 'Bersih', color: 'success', icon: <CheckCircle />, description: 'Siap digunakan' },
+      };
+
+      return statusMap[zoneState.status] || { label: zoneState.status, color: 'default', icon: null, description: '' };
+    }
+
+    return null;
+  };
+
+  // Helper function untuk interpretasi status antrian
+  const getQueueStatusInfo = (zoneState) => {
+    if (!zoneState) return null;
+
+    if (typeof zoneState === 'number') {
+      const count = zoneState;
+      if (count > 4) return { label: `Penuh (${count} orang)`, color: 'error', icon: <Warning /> };
+      if (count > 0) return { label: `${count} orang`, color: 'warning', icon: <Person /> };
+      return { label: 'Kosong', color: 'success', icon: <CheckCircle /> };
+    }
+
+    if (typeof zoneState === 'object' && zoneState.person_count !== undefined) {
+      const count = zoneState.person_count;
+      if (count > 4) return { label: `Penuh (${count} orang)`, color: 'error', icon: <Warning /> };
+      if (count > 0) return { label: `${count} orang`, color: 'warning', icon: <Person /> };
+      return { label: 'Kosong', color: 'success', icon: <CheckCircle /> };
+    }
+
+    return null;
   };
 
   // Draw detections overlay on canvas
@@ -188,19 +253,118 @@ const LiveMonitor = ({ branchId }) => {
     }
   }, [detections, frameSize, savedZones]);
 
+  // WebSocket connection untuk deteksi real-time
+  useEffect(() => {
+    if (!branchId) return;
+
+    // Connect ke WebSocket untuk detections
+    const wsUrl = `ws://localhost:8000/ws/detections/${branchId}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[WebSocket] Connected for real-time detections');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setDetections(data.detections || []);
+        setFrameSize(data.frame_size || { width: 0, height: 0 });
+      } catch (err) {
+        console.error('Error parsing WebSocket message:', err);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('[WebSocket] Error:', error);
+      // Fallback ke HTTP polling jika WebSocket error
+      loadDetections();
+    };
+
+    ws.onclose = () => {
+      console.log('[WebSocket] Disconnected');
+      // Reconnect setelah 3 detik
+      setTimeout(() => {
+        if (wsRef.current === ws) {
+          // Reconnect akan dilakukan oleh useEffect saat branchId masih sama
+        }
+      }, 3000);
+    };
+
+    // Cleanup
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+      wsRef.current = null;
+    };
+  }, [branchId]);
+
+  // WebSocket connection untuk zone states, billing, dan alerts real-time
+  useEffect(() => {
+    if (!branchId) return;
+
+    // Connect ke WebSocket untuk data (zone states, billing, alerts)
+    const wsDataUrl = `ws://localhost:8000/ws/data/${branchId}`;
+    const wsData = new WebSocket(wsDataUrl);
+    wsDataRef.current = wsData;
+
+    wsData.onopen = () => {
+      console.log('[WebSocket] Connected for real-time data (zone states, billing, alerts)');
+    };
+
+    wsData.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'data_update') {
+          // Update zone_states hanya jika ada data (tidak replace dengan empty object)
+          if (data.zone_states && Object.keys(data.zone_states).length > 0) {
+            setZoneStates(data.zone_states);
+          }
+          // Update billing hanya jika ada data
+          if (data.billing && Array.isArray(data.billing)) {
+            setBillingData(data.billing);
+          }
+        }
+      } catch (err) {
+        console.error('Error parsing WebSocket data message:', err);
+      }
+    };
+
+    wsData.onerror = (error) => {
+      console.error('[WebSocket Data] Error:', error);
+      // Fallback ke HTTP polling jika WebSocket error
+      loadZoneStates();
+      loadBillingData();
+    };
+
+    wsData.onclose = () => {
+      console.log('[WebSocket Data] Disconnected');
+      // Reconnect setelah 3 detik
+      setTimeout(() => {
+        if (wsDataRef.current === wsData) {
+          // Reconnect akan dilakukan oleh useEffect saat branchId masih sama
+        }
+      }, 3000);
+    };
+
+    // Cleanup
+    return () => {
+      if (wsData) {
+        wsData.close();
+      }
+      wsDataRef.current = null;
+    };
+  }, [branchId]);
+
   useEffect(() => {
     if (branchId) {
+      loadSavedZones(); // Load zones saat branchId berubah (hanya sekali, tidak perlu real-time)
+      // Zone states dan billing sekarang via WebSocket (real-time)
+      // Hanya load sekali untuk initial data
       loadBillingData();
-      loadDetections();
-      loadSavedZones(); // Load zones saat branchId berubah
-
-      const billingInterval = setInterval(loadBillingData, 5000);
-      const detectionInterval = setInterval(loadDetections, 1000); // Update detections setiap 1 detik untuk real-time
-
-      return () => {
-        clearInterval(billingInterval);
-        clearInterval(detectionInterval);
-      };
+      loadZoneStates();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId]);
@@ -273,6 +437,10 @@ const LiveMonitor = ({ branchId }) => {
                       height: 'auto',
                       display: 'block',
                       objectFit: 'contain',
+                      imageRendering: 'auto', // Smooth rendering
+                      willChange: 'contents', // Hint browser untuk optimasi
+                      backfaceVisibility: 'hidden', // Mencegah flickering
+                      transform: 'translateZ(0)', // Force hardware acceleration
                     }}
                     onLoad={() => {
                       setLoading(false);
@@ -292,7 +460,7 @@ const LiveMonitor = ({ branchId }) => {
                       left: 0,
                       width: '100%',
                       height: '100%',
-                      pointerEvents: 'none',
+                      pointerEvents: 'none', // Tidak memblokir klik - hanya untuk overlay drawing
                       zIndex: 10,
                     }}
                   />
@@ -363,58 +531,183 @@ const LiveMonitor = ({ branchId }) => {
           </Paper>
         </Grid>
 
-        {/* Billing Table Section */}
+        {/* Right Panel: Zone States, Antrian Kasir, and Billing */}
         <Grid item xs={12} lg={4}>
-          <Paper elevation={3} sx={{ p: 2, height: '100%' }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Receipt color="primary" />
-                <Typography variant="h6" component="h3">
-                  Tagihan Realtime
-                </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {/* Zone States Section */}
+            <Paper elevation={3} sx={{ p: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <TableRestaurant color="primary" />
+                  <Typography variant="h6" component="h3">
+                    Status Zona
+                  </Typography>
+                </Box>
+                <Chip label="Real-time" size="small" color="primary" variant="outlined" />
               </Box>
-              <Chip label="Auto-refresh: 5 detik" size="small" color="secondary" variant="outlined" />
-            </Box>
 
-            <TableContainer sx={{ maxHeight: 600 }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>
-                      <strong>Zona (Meja)</strong>
-                    </TableCell>
-                    <TableCell>
-                      <strong>Item</strong>
-                    </TableCell>
-                    <TableCell align="right">
-                      <strong>Qty</strong>
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {billingData.length === 0 ? (
+              {Object.keys(zoneStates).length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                  Belum ada data status zona
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {Object.entries(zoneStates).map(([zoneName, zoneState]) => {
+                    const zoneType = zoneState.zone_type || 'unknown';
+                    let statusInfo = null;
+
+                    // Hanya tampilkan zone dengan tipe 'table' di Status Zona
+                    // Zone 'kasir' dan 'queue' ditampilkan di panel Antrian Kasir
+                    if (zoneType === 'table') {
+                      statusInfo = getTableStatusInfo(zoneState);
+                    }
+
+                    // Jika bukan table, skip (tidak tampilkan di Status Zona)
+                    if (zoneType !== 'table') {
+                      return null;
+                    }
+
+                    // Jika statusInfo null, gunakan default status
+                    if (!statusInfo) {
+                      statusInfo = {
+                        label: 'Unknown',
+                        color: 'default',
+                        icon: <Warning />,
+                        description: 'Status tidak diketahui',
+                      };
+                    }
+
+                    return (
+                      <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                          <Typography variant="subtitle2" fontWeight="bold">
+                            {zoneName}
+                          </Typography>
+                          <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
+                        </Box>
+                        {statusInfo.description && (
+                          <Typography variant="caption" color="text.secondary">
+                            {statusInfo.description}
+                          </Typography>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              )}
+            </Paper>
+
+            {/* Billing Table Section */}
+            <Paper elevation={3} sx={{ p: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Receipt color="secondary" />
+                  <Typography variant="h6" component="h3">
+                    Tagihan Realtime
+                  </Typography>
+                </Box>
+                <Chip label="Real-time" size="small" color="secondary" variant="outlined" />
+              </Box>
+
+              <TableContainer sx={{ maxHeight: 400 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
                     <TableRow>
-                      <TableCell colSpan={3} align="center" sx={{ py: 4 }}>
-                        <Typography variant="body2" color="text.secondary">
-                          Belum ada data tagihan
-                        </Typography>
+                      <TableCell>
+                        <strong>Zona (Meja)</strong>
+                      </TableCell>
+                      <TableCell>
+                        <strong>Item</strong>
+                      </TableCell>
+                      <TableCell align="right">
+                        <strong>Qty</strong>
                       </TableCell>
                     </TableRow>
-                  ) : (
-                    billingData.map((row, index) => (
-                      <TableRow key={index} hover>
-                        <TableCell>{row.zone}</TableCell>
-                        <TableCell>{row.item}</TableCell>
-                        <TableCell align="right">
-                          <Chip label={row.qty} size="small" color="primary" />
+                  </TableHead>
+                  <TableBody>
+                    {billingData.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} align="center" sx={{ py: 4 }}>
+                          <Typography variant="body2" color="text.secondary">
+                            Belum ada data tagihan
+                          </Typography>
                         </TableCell>
                       </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Paper>
+                    ) : (
+                      billingData.map((row, index) => (
+                        <TableRow key={index} hover>
+                          <TableCell>{row.zone}</TableCell>
+                          <TableCell>{row.item}</TableCell>
+                          <TableCell align="right">
+                            <Chip label={row.qty} size="small" color="primary" />
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+
+            {/* Antrian Kasir Section */}
+            <Paper elevation={3} sx={{ p: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Queue color="primary" />
+                  <Typography variant="h6" component="h3">
+                    Antrian Kasir
+                  </Typography>
+                </Box>
+                <Chip label="Real-time" size="small" color="primary" variant="outlined" />
+              </Box>
+
+              {(() => {
+                // Ambil zone dengan tipe 'kasir' atau 'queue' dari zoneStates
+                const queueZones = Object.entries(zoneStates).filter(([zoneName, zoneState]) => {
+                  const zoneType = zoneState.zone_type || 'unknown';
+                  return zoneType === 'kasir' || zoneType === 'queue';
+                });
+
+                if (queueZones.length === 0) {
+                  return (
+                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                      Belum ada zona kasir/antrian
+                    </Typography>
+                  );
+                }
+
+                return (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {queueZones.map(([zoneName, zoneState]) => {
+                      const statusInfo = getQueueStatusInfo(zoneState);
+                      if (!statusInfo) return null;
+
+                      return (
+                        <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                            <Typography variant="subtitle2" fontWeight="bold">
+                              {zoneName}
+                            </Typography>
+                            <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
+                          </Box>
+                          {statusInfo.description && (
+                            <Typography variant="caption" color="text.secondary">
+                              {statusInfo.description}
+                            </Typography>
+                          )}
+                          {typeof zoneState === 'object' && zoneState.person_count !== undefined && (
+                            <Typography variant="body2" sx={{ mt: 0.5 }}>
+                              <strong>{zoneState.person_count}</strong> orang dalam antrian
+                            </Typography>
+                          )}
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                );
+              })()}
+            </Paper>
+          </Box>
         </Grid>
       </Grid>
     </Box>

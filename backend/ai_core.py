@@ -254,10 +254,11 @@ class SuperAIEngine:
                 
                 # Check Occupancy (Is there a person?)
                 is_occupied = False
+                person_count = 0
                 for p_loc in detected_people:
                     if self._is_point_in_zone(p_loc, z_coords, w, h):
                         is_occupied = True
-                        break
+                        person_count += 1
                 
                 # 1. Billing Logic (Engine 1)
                 for iname, iqty in item_counts.items():
@@ -268,27 +269,59 @@ class SuperAIEngine:
                     })
 
                 # 2. Dirty Table Logic (Engine 2)
-                # State logic: 0 = Clean, 1-N = Dirty Timer
-                current_timer = previous_states.get(z_name, 0)
+                # State logic: Simpan status lengkap dengan informasi detail
+                current_state = previous_states.get(z_name, {})
+                if isinstance(current_state, dict):
+                    current_timer_value = current_state.get('timer', 0)
+                else:
+                    # Backward compatibility: jika state masih integer
+                    current_timer_value = current_state if isinstance(current_state, (int, float)) else 0
                 
                 if is_occupied:
-                    new_timer = 0 # Reset if customer is present
-                    status = "Occupied"
+                    # Meja TERISI (ada customer)
+                    new_state = {
+                        "status": "TERISI",
+                        "timer": 0,
+                        "person_count": person_count,
+                        "item_count": len(item_counts),
+                        "items": item_counts
+                    }
                 elif len(item_counts) > 0:
-                    # Empty but has items -> Potential Dirty
-                    new_timer = current_timer + 1
-                    status = "Dirty Candidate"
-                    if new_timer > 3: # Assuming Scheduler runs every 5s -> 15s threshold
-                        status = "NEEDS CLEANING"
+                    # Meja KOSONG tapi ada items → KOTOR
+                    new_timer = current_timer_value + 1
+                    if new_timer > 3:  # 15 detik threshold (3 * 5 detik interval)
+                        new_state = {
+                            "status": "KOTOR",
+                            "timer": new_timer,
+                            "person_count": 0,
+                            "item_count": len(item_counts),
+                            "items": item_counts,
+                            "needs_cleaning": True
+                        }
                         final_result["security_alerts"].append({
                             "type": "dirty_table",
                             "msg": f"{z_name} perlu dibersihkan (Items: {len(item_counts)})"
                         })
+                    else:
+                        new_state = {
+                            "status": "KOTOR",
+                            "timer": new_timer,
+                            "person_count": 0,
+                            "item_count": len(item_counts),
+                            "items": item_counts,
+                            "needs_cleaning": False
+                        }
                 else:
-                    new_timer = 0
-                    status = "Clean"
+                    # Meja BERSIH (tidak ada orang, tidak ada items)
+                    new_state = {
+                        "status": "BERSIH",
+                        "timer": 0,
+                        "person_count": 0,
+                        "item_count": 0,
+                        "items": {}
+                    }
                 
-                final_result["zone_states"][z_name] = new_timer
+                final_result["zone_states"][z_name] = new_state
 
             # --- LOGIC B: KASIR / QUEUE (Crowd Control) ---
             elif z_type == 'kasir' or z_type == 'queue':

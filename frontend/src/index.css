@@ -31,6 +31,9 @@ body {
   min-width: 320px;
   min-height: 100vh;
   overflow-x: hidden;
+  /* Pastikan tidak ada element yang memblokir klik */
+  pointer-events: auto;
+  user-select: auto;
 }
 
 #root {
