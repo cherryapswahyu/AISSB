@@ -1,0 +1,53 @@
+.snapshot-viewer {
+  text-align: center;
+}
+
+.snapshot-viewer h3 {
+  margin-top: 0;
+  color: #333;
+}
+
+.snapshot-container {
+  position: relative;
+  min-height: 300px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.snapshot-image {
+  max-width: 100%;
+  max-height: 70vh;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.loading {
+  color: #666;
+  font-size: 16px;
+}
+
+.error-message {
+  background: #fee;
+  color: #c33;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #fcc;
+}
+
+.refresh-button {
+  padding: 10px 20px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.3s;
+}
+
+.refresh-button:hover {
+  background: #5568d3;
+}

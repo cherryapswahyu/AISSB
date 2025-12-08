@@ -1,0 +1,151 @@
+# ============================================
+# Python / Backend
+# ============================================
+# Virtual Environment
+backend/venv/
+backend/env/
+backend/.venv/
+backend/ENV/
+backend/env.bak/
+backend/venv.bak/
+
+# Python Cache
+backend/__pycache__/
+backend/**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+backend/Python/
+backend/build/
+backend/develop-eggs/
+backend/dist/
+backend/downloads/
+backend/eggs/
+backend/.eggs/
+backend/lib/
+backend/lib64/
+backend/parts/
+backend/sdist/
+backend/var/
+backend/wheels/
+backend/*.egg-info/
+backend/.installed.cfg
+backend/*.egg
+
+# Database
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/soto_cloud.db
+
+# Environment variables
+backend/.env
+backend/.env.local
+backend/.env.*.local
+
+# AI Model files (optional - uncomment if you don't want to track model files)
+# backend/*.pt
+# backend/*.onnx
+# backend/known_faces/
+
+# IDE - Python
+backend/.vscode/
+backend/.idea/
+backend/*.swp
+backend/*.swo
+backend/*~
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.dmypy.json
+backend/dmypy.json
+
+# Jupyter Notebook
+backend/.ipynb_checkpoints
+
+# pyenv
+backend/.python-version
+
+# ============================================
+# Node.js / Frontend
+# ============================================
+# Dependencies
+frontend/node_modules/
+frontend/.pnp
+frontend/.pnp.js
+
+# Testing
+frontend/coverage/
+frontend/.nyc_output
+
+# Production
+frontend/build/
+frontend/dist/
+frontend/dist-ssr/
+
+# Misc
+frontend/.DS_Store
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+frontend/lerna-debug.log*
+
+# Editor directories and files
+frontend/.vscode/*
+!frontend/.vscode/extensions.json
+frontend/.idea
+frontend/*.suo
+frontend/*.ntvs*
+frontend/*.njsproj
+frontend/*.sln
+frontend/*.sw?
+
+# ============================================
+# General / OS
+# ============================================
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# ============================================
+# Project Specific
+# ============================================
+# Keep model files but ignore large ones if needed
+# Uncomment if you want to ignore model files
+# *.pt
+# *.onnx
+

@@ -1,0 +1,242 @@
+.camera-manager {
+  width: 100%;
+}
+
+.camera-manager-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.camera-manager-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 24px;
+}
+
+.add-button {
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity 0.3s;
+}
+
+.add-button:hover {
+  opacity: 0.9;
+}
+
+.error-message {
+  background: #fee;
+  color: #c33;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  border: 1px solid #fcc;
+}
+
+.add-camera-form {
+  background: white;
+  padding: 25px;
+  border-radius: 8px;
+  margin-bottom: 30px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.add-camera-form h3 {
+  margin-top: 0;
+  color: #333;
+  font-size: 20px;
+}
+
+.add-camera-form .form-group {
+  margin-bottom: 15px;
+}
+
+.add-camera-form label {
+  display: block;
+  margin-bottom: 5px;
+  color: #555;
+  font-weight: 500;
+}
+
+.add-camera-form input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.add-camera-form input:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.submit-button {
+  padding: 10px 20px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.3s;
+}
+
+.submit-button:hover {
+  background: #5568d3;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: #999;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.cameras-table-container {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  overflow-x: auto;
+}
+
+.cameras-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cameras-table thead {
+  background: #f8f9fa;
+}
+
+.cameras-table th {
+  padding: 12px 15px;
+  text-align: left;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.cameras-table td {
+  padding: 12px 15px;
+  border-bottom: 1px solid #dee2e6;
+  color: #555;
+}
+
+.cameras-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.cameras-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.rtsp-url {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  word-break: break-all;
+  max-width: 400px;
+}
+
+.setup-button {
+  padding: 6px 12px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.3s;
+}
+
+.setup-button:hover {
+  background: #5568d3;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.monitor-button {
+  padding: 6px 12px;
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.3s;
+}
+
+.monitor-button:hover {
+  background: #218838;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #666;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: auto;
+  position: relative;
+  padding: 20px;
+}
+
+.close-button {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  background: #f0f0f0;
+  border: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s;
+}
+
+.close-button:hover {
+  background: #e0e0e0;
+}
