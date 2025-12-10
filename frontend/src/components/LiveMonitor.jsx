@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { snapshotAPI, billingAPI, detectionAPI, zoneAPI, zoneStateAPI } from '../services/api';
-import { Box, Grid, Paper, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, CircularProgress, Alert, Chip, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
-import { Videocam, Receipt, ExpandMore, LocationOn, Warning, CheckCircle, Person, TableRestaurant, Queue } from '@mui/icons-material';
+import { Box, Grid, Paper, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, CircularProgress, Alert, Chip, Accordion, AccordionSummary, AccordionDetails, Snackbar } from '@mui/material';
+import { Videocam, Receipt, ExpandMore, LocationOn, Warning, CheckCircle, Person, TableRestaurant, Queue, Notifications } from '@mui/icons-material';
 
 const LiveMonitor = ({ branchId }) => {
   const [imageUrl, setImageUrl] = useState('');
@@ -12,10 +12,14 @@ const LiveMonitor = ({ branchId }) => {
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const [savedZones, setSavedZones] = useState([]);
   const [zoneStates, setZoneStates] = useState({});
+  const [notifications, setNotifications] = useState([]);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [currentNotification, setCurrentNotification] = useState(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const wsRef = useRef(null);
   const wsDataRef = useRef(null);
+  const prevZoneStatesRef = useRef({});
 
   // Setup streaming video (MJPEG)
   useEffect(() => {
@@ -127,6 +131,75 @@ const LiveMonitor = ({ branchId }) => {
     return null;
   };
 
+  // Check for notifications based on zone states
+  useEffect(() => {
+    const newNotifications = [];
+
+    // Check table zones for cleaning needs
+    Object.entries(zoneStates).forEach(([zoneName, zoneState]) => {
+      const zoneType = zoneState.zone_type || 'unknown';
+      const prevState = prevZoneStatesRef.current[zoneName];
+
+      // Check for table zones that need cleaning
+      if (zoneType === 'table' && typeof zoneState === 'object' && zoneState.status === 'KOTOR' && zoneState.needs_cleaning) {
+        // Only notify if this is a new state change (wasn't needing cleaning before)
+        if (!prevState || !prevState.needs_cleaning) {
+          newNotifications.push({
+            type: 'warning',
+            message: `Meja ${zoneName} perlu dibersihkan!`,
+            severity: 'warning',
+          });
+        }
+      }
+
+      // Check for queue zones that are full
+      if ((zoneType === 'kasir' || zoneType === 'queue') && typeof zoneState === 'object') {
+        const personCount = zoneState.person_count || 0;
+        const prevCount = prevState?.person_count || 0;
+
+        // Notify when queue becomes full (crosses threshold of 4)
+        if (personCount > 4 && prevCount <= 4) {
+          newNotifications.push({
+            type: 'error',
+            message: `Antrian ${zoneName} penuh! (${personCount} orang)`,
+            severity: 'error',
+          });
+        }
+      }
+    });
+
+    // Update previous states
+    prevZoneStatesRef.current = { ...zoneStates };
+
+    // Show notifications
+    if (newNotifications.length > 0) {
+      setNotifications((prev) => [...prev, ...newNotifications]);
+      // Show first notification
+      if (newNotifications.length > 0) {
+        setCurrentNotification(newNotifications[0]);
+        setNotificationOpen(true);
+      }
+    }
+  }, [zoneStates]);
+
+  // Handle notification close
+  const handleNotificationClose = (event, reason) => {
+    if (reason === 'clickaway') {
+      return;
+    }
+    setNotificationOpen(false);
+    // Show next notification if available
+    if (notifications.length > 1) {
+      const remaining = notifications.slice(1);
+      setNotifications(remaining);
+      setCurrentNotification(remaining[0]);
+      setTimeout(() => setNotificationOpen(true), 500);
+    } else {
+      setNotifications([]);
+      setCurrentNotification(null);
+    }
+  };
+
   // Draw detections overlay on canvas
   useEffect(() => {
     const drawOverlay = () => {
@@ -149,7 +222,7 @@ const LiveMonitor = ({ branchId }) => {
       // Clear canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw saved zones terlebih dahulu (garis meja/refill)
+      // Draw saved zones terlebih dahulu (garis meja/zona)
       if (savedZones.length > 0 && frameSize.width && frameSize.height) {
         savedZones.forEach((zone) => {
           if (zone.coords && zone.coords.length === 4) {
@@ -203,9 +276,30 @@ const LiveMonitor = ({ branchId }) => {
         ctx.strokeRect(x1, y1, width, height);
 
         // Draw label background
-        const label = `${detection.name} (${(detection.confidence * 100).toFixed(0)}%)`;
+        let label = `${detection.name} (${(detection.confidence * 100).toFixed(0)}%)`;
+
+        // Jika ada customer_type, tambahkan info
+        if (detection.customer_type) {
+          if (detection.customer_type === 'staff') {
+            label = `${detection.customer_name || detection.name} (${(detection.confidence * 100).toFixed(0)}%)`;
+          } else if (detection.customer_type === 'regular') {
+            label = `Pengunjung Regular (${(detection.confidence * 100).toFixed(0)}%)`;
+          } else if (detection.customer_type === 'new') {
+            label = `Pengunjung Baru (${(detection.confidence * 100).toFixed(0)}%)`;
+          }
+        }
+
         ctx.font = 'bold 14px Arial';
-        ctx.fillStyle = detection.zone ? 'rgba(76, 175, 80, 0.9)' : 'rgba(255, 152, 0, 0.9)';
+        // Warna berbeda berdasarkan customer_type
+        if (detection.customer_type === 'staff') {
+          ctx.fillStyle = detection.zone ? 'rgba(33, 150, 243, 0.9)' : 'rgba(33, 150, 243, 0.9)'; // Blue untuk staff
+        } else if (detection.customer_type === 'regular') {
+          ctx.fillStyle = detection.zone ? 'rgba(76, 175, 80, 0.9)' : 'rgba(76, 175, 80, 0.9)'; // Green untuk regular
+        } else if (detection.customer_type === 'new') {
+          ctx.fillStyle = detection.zone ? 'rgba(255, 193, 7, 0.9)' : 'rgba(255, 193, 7, 0.9)'; // Yellow untuk new
+        } else {
+          ctx.fillStyle = detection.zone ? 'rgba(76, 175, 80, 0.9)' : 'rgba(255, 152, 0, 0.9)'; // Default
+        }
         const textWidth = ctx.measureText(label).width;
         ctx.fillRect(x1, y1 - 22, textWidth + 10, 22);
 
@@ -534,68 +628,80 @@ const LiveMonitor = ({ branchId }) => {
         {/* Right Panel: Zone States, Antrian Kasir, and Billing */}
         <Grid item xs={12} lg={4}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {/* Zone States Section */}
-            <Paper elevation={3} sx={{ p: 2 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <TableRestaurant color="primary" />
-                  <Typography variant="h6" component="h3">
-                    Status Zona
-                  </Typography>
-                </Box>
-                <Chip label="Real-time" size="small" color="primary" variant="outlined" />
-              </Box>
+            {/* Zone States Section - Only show if there are table zones */}
+            {(() => {
+              // Check if there are any table zones in savedZones
+              const hasTableZones = savedZones.some((zone) => zone.type === 'table');
 
-              {Object.keys(zoneStates).length === 0 ? (
-                <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
-                  Belum ada data status zona
-                </Typography>
-              ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  {Object.entries(zoneStates).map(([zoneName, zoneState]) => {
-                    const zoneType = zoneState.zone_type || 'unknown';
-                    let statusInfo = null;
+              if (!hasTableZones) {
+                return null; // Don't render the panel if no table zones exist
+              }
 
-                    // Hanya tampilkan zone dengan tipe 'table' di Status Zona
-                    // Zone 'kasir' dan 'queue' ditampilkan di panel Antrian Kasir
-                    if (zoneType === 'table') {
-                      statusInfo = getTableStatusInfo(zoneState);
-                    }
+              // Filter zone states to only show table zones
+              const tableZoneStates = Object.entries(zoneStates).filter(([, zoneState]) => {
+                const zoneType = zoneState.zone_type || 'unknown';
+                return zoneType === 'table';
+              });
 
-                    // Jika bukan table, skip (tidak tampilkan di Status Zona)
-                    if (zoneType !== 'table') {
-                      return null;
-                    }
+              return (
+                <Paper elevation={3} sx={{ p: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <TableRestaurant color="primary" />
+                      <Typography variant="h6" component="h3">
+                        Status Zona
+                      </Typography>
+                    </Box>
+                    <Chip label="Real-time" size="small" color="primary" variant="outlined" />
+                  </Box>
 
-                    // Jika statusInfo null, gunakan default status
-                    if (!statusInfo) {
-                      statusInfo = {
-                        label: 'Unknown',
-                        color: 'default',
-                        icon: <Warning />,
-                        description: 'Status tidak diketahui',
-                      };
-                    }
+                  {tableZoneStates.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                      Belum ada data status zona
+                    </Typography>
+                  ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {tableZoneStates.map(([zoneName, zoneState]) => {
+                        let statusInfo = getTableStatusInfo(zoneState);
 
-                    return (
-                      <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                          <Typography variant="subtitle2" fontWeight="bold">
-                            {zoneName}
-                          </Typography>
-                          <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
-                        </Box>
-                        {statusInfo.description && (
-                          <Typography variant="caption" color="text.secondary">
-                            {statusInfo.description}
-                          </Typography>
-                        )}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              )}
-            </Paper>
+                        // Jika statusInfo null, gunakan default status
+                        if (!statusInfo) {
+                          statusInfo = {
+                            label: 'Unknown',
+                            color: 'default',
+                            icon: <Warning />,
+                            description: 'Status tidak diketahui',
+                          };
+                        }
+
+                        return (
+                          <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                              <Typography variant="subtitle2" fontWeight="bold">
+                                {zoneName}
+                              </Typography>
+                              <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
+                            </Box>
+                            {statusInfo.description && (
+                              <Typography variant="caption" color="text.secondary">
+                                {statusInfo.description}
+                              </Typography>
+                            )}
+                            {/* Customer Info Display */}
+                            {zoneState.customer_info && (
+                              <Box sx={{ mt: 1, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                                {zoneState.customer_info.regular_count > 0 && <Chip label={`Regular: ${zoneState.customer_info.regular_count}`} size="small" color="success" variant="outlined" />}
+                                {zoneState.customer_info.new_count > 0 && <Chip label={`New: ${zoneState.customer_info.new_count}`} size="small" color="warning" variant="outlined" />}
+                              </Box>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+                </Paper>
+              );
+            })()}
 
             {/* Billing Table Section */}
             <Paper elevation={3} sx={{ p: 2 }}>
@@ -649,67 +755,86 @@ const LiveMonitor = ({ branchId }) => {
               </TableContainer>
             </Paper>
 
-            {/* Antrian Kasir Section */}
-            <Paper elevation={3} sx={{ p: 2 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Queue color="primary" />
-                  <Typography variant="h6" component="h3">
-                    Antrian Kasir
-                  </Typography>
-                </Box>
-                <Chip label="Real-time" size="small" color="primary" variant="outlined" />
-              </Box>
+            {/* Antrian Kasir Section - Only show if there are queue/cashier zones */}
+            {(() => {
+              // Check if there are any queue/cashier zones in savedZones
+              const hasQueueZones = savedZones.some((zone) => zone.type === 'kasir' || zone.type === 'queue');
 
-              {(() => {
-                // Ambil zone dengan tipe 'kasir' atau 'queue' dari zoneStates
-                const queueZones = Object.entries(zoneStates).filter(([zoneName, zoneState]) => {
-                  const zoneType = zoneState.zone_type || 'unknown';
-                  return zoneType === 'kasir' || zoneType === 'queue';
-                });
+              if (!hasQueueZones) {
+                return null; // Don't render the panel if no queue zones exist
+              }
 
-                if (queueZones.length === 0) {
-                  return (
-                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
-                      Belum ada zona kasir/antrian
-                    </Typography>
-                  );
-                }
+              // Ambil zone dengan tipe 'kasir' atau 'queue' dari zoneStates
+              const queueZones = Object.entries(zoneStates).filter(([, zoneState]) => {
+                const zoneType = zoneState.zone_type || 'unknown';
+                return zoneType === 'kasir' || zoneType === 'queue';
+              });
 
-                return (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    {queueZones.map(([zoneName, zoneState]) => {
-                      const statusInfo = getQueueStatusInfo(zoneState);
-                      if (!statusInfo) return null;
-
-                      return (
-                        <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                            <Typography variant="subtitle2" fontWeight="bold">
-                              {zoneName}
-                            </Typography>
-                            <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
-                          </Box>
-                          {statusInfo.description && (
-                            <Typography variant="caption" color="text.secondary">
-                              {statusInfo.description}
-                            </Typography>
-                          )}
-                          {typeof zoneState === 'object' && zoneState.person_count !== undefined && (
-                            <Typography variant="body2" sx={{ mt: 0.5 }}>
-                              <strong>{zoneState.person_count}</strong> orang dalam antrian
-                            </Typography>
-                          )}
-                        </Box>
-                      );
-                    })}
+              return (
+                <Paper elevation={3} sx={{ p: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Queue color="primary" />
+                      <Typography variant="h6" component="h3">
+                        Antrian Kasir
+                      </Typography>
+                    </Box>
+                    <Chip label="Real-time" size="small" color="primary" variant="outlined" />
                   </Box>
-                );
-              })()}
-            </Paper>
+
+                  {queueZones.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                      Belum ada data antrian
+                    </Typography>
+                  ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {queueZones.map(([zoneName, zoneState]) => {
+                        const statusInfo = getQueueStatusInfo(zoneState);
+                        if (!statusInfo) return null;
+
+                        return (
+                          <Box key={zoneName} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                              <Typography variant="subtitle2" fontWeight="bold">
+                                {zoneName}
+                              </Typography>
+                              <Chip icon={statusInfo.icon} label={statusInfo.label} color={statusInfo.color} size="small" variant="outlined" />
+                            </Box>
+                            {statusInfo.description && (
+                              <Typography variant="caption" color="text.secondary">
+                                {statusInfo.description}
+                              </Typography>
+                            )}
+                            {typeof zoneState === 'object' && zoneState.person_count !== undefined && (
+                              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                                <strong>{zoneState.person_count}</strong> orang dalam antrian
+                              </Typography>
+                            )}
+                            {/* Customer Info Display */}
+                            {zoneState.customer_info && (
+                              <Box sx={{ mt: 1, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                                {zoneState.customer_info.regular_count > 0 && <Chip label={`Regular: ${zoneState.customer_info.regular_count}`} size="small" color="success" variant="outlined" />}
+                                {zoneState.customer_info.new_count > 0 && <Chip label={`New: ${zoneState.customer_info.new_count}`} size="small" color="warning" variant="outlined" />}
+                              </Box>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+                </Paper>
+              );
+            })()}
           </Box>
         </Grid>
       </Grid>
+
+      {/* Notification Snackbar */}
+      <Snackbar open={notificationOpen} autoHideDuration={6000} onClose={handleNotificationClose} anchorOrigin={{ vertical: 'top', horizontal: 'right' }}>
+        <Alert onClose={handleNotificationClose} severity={currentNotification?.severity || 'info'} variant="filled" icon={<Notifications />} sx={{ width: '100%' }}>
+          {currentNotification?.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

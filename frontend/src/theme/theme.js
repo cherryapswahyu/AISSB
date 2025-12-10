@@ -5,9 +5,9 @@ const theme = createTheme({
   palette: {
     mode: 'light',
     primary: {
-      main: '#667eea', // Purple sesuai dengan warna existing
-      light: '#8fa3f0',
-      dark: '#4a5bd4',
+      main: '#2196f3', // Biru solid
+      light: '#64b5f6',
+      dark: '#1976d2',
       contrastText: '#ffffff',
     },
     secondary: {
@@ -33,15 +33,7 @@ const theme = createTheme({
     },
   },
   typography: {
-    fontFamily: [
-      '-apple-system',
-      'BlinkMacSystemFont',
-      '"Segoe UI"',
-      'Roboto',
-      '"Helvetica Neue"',
-      'Arial',
-      'sans-serif',
-    ].join(','),
+    fontFamily: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'].join(','),
     h1: {
       fontSize: '2.5rem',
       fontWeight: 600,
@@ -92,4 +84,3 @@ const theme = createTheme({
 });
 
 export default theme;
-

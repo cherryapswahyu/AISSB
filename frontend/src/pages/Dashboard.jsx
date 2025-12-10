@@ -6,9 +6,12 @@ import CameraManager from '../components/CameraManager';
 import UserManager from '../components/UserManager';
 import BranchManager from '../components/BranchManager';
 import Reports from '../components/Reports';
-import { Box, AppBar, Toolbar, Typography, Button, Grid, Card, CardContent, CardActions, Alert, CircularProgress, Switch, FormControlLabel } from '@mui/material';
-import { CameraAlt, List, Logout, ArrowBack, Analytics, PlayArrow, People, Store, Settings, Assessment } from '@mui/icons-material';
+import StaffFaceManager from '../components/StaffFaceManager';
+import { Box, Drawer, AppBar, Toolbar, Typography, Button, List, ListItem, ListItemButton, ListItemIcon, ListItemText, Alert, CircularProgress, Switch, FormControlLabel, Chip, Paper, Divider, IconButton, Collapse } from '@mui/material';
+import { CameraAlt, Logout, PlayArrow, People, Store, Settings, Assessment, Face, Dashboard as DashboardIcon, Menu as MenuIcon, ExpandLess, ExpandMore } from '@mui/icons-material';
 import { analysisAPI, backgroundServiceAPI } from '../services/api';
+
+const DRAWER_WIDTH = 280;
 
 const Dashboard = () => {
   const { user, logout } = useAuth();
@@ -18,34 +21,56 @@ const Dashboard = () => {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [backgroundServiceStatus, setBackgroundServiceStatus] = useState(null);
   const [backgroundServiceLoading, setBackgroundServiceLoading] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [desktopOpen, setDesktopOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
+
+  const handleDesktopDrawerToggle = () => {
+    setDesktopOpen(!desktopOpen);
+  };
+
   const handleKelolaKamera = () => {
     setActiveView('camera-manager');
+    setMobileOpen(false);
   };
 
   const handleKelolaUser = () => {
     setActiveView('user-manager');
+    setMobileOpen(false);
   };
 
   const handleListCabang = () => {
     setActiveView('branch-manager');
+    setMobileOpen(false);
   };
 
   const handleReports = () => {
     setActiveView('reports');
+    setMobileOpen(false);
+  };
+
+  const handleStaffFaces = () => {
+    setActiveView('staff-faces');
+    setMobileOpen(false);
   };
 
   const handleLiveMonitor = (cameraId) => {
     setActiveView(`live-monitor-${cameraId}`);
+    setMobileOpen(false);
   };
 
   const handleBackToDashboard = () => {
     setActiveView(null);
+    setMobileOpen(false);
   };
 
   const handleAnalyzeAll = async () => {
@@ -72,11 +97,9 @@ const Dashboard = () => {
     }
   };
 
-  // Load background service status
   useEffect(() => {
     if (user?.role === 'admin') {
       loadBackgroundServiceStatus();
-      // Refresh status setiap 5 detik
       const interval = setInterval(loadBackgroundServiceStatus, 5000);
       return () => clearInterval(interval);
     }
@@ -101,7 +124,6 @@ const Dashboard = () => {
       } else {
         await backgroundServiceAPI.enable();
       }
-      // Reload status setelah toggle
       await loadBackgroundServiceStatus();
     } catch (error) {
       setAnalysisResult({
@@ -113,187 +135,489 @@ const Dashboard = () => {
     }
   };
 
+  // Render sub-views
+  const renderSubView = () => {
+    switch (activeView) {
+      case 'camera-manager':
+        return <CameraManager onSetupZona={handleLiveMonitor} />;
+      case 'user-manager':
+        return <UserManager />;
+      case 'branch-manager':
+        return <BranchManager />;
+      case 'reports':
+        return <Reports />;
+      case 'staff-faces':
+        return <StaffFaceManager />;
+      default:
+        if (activeView?.startsWith('live-monitor-')) {
+          return <LiveMonitor branchId={parseInt(activeView.split('-')[2])} />;
+        }
+        return null;
+    }
+  };
+
+  // Admin menu items
+  const adminMenuItems = [
+    {
+      id: 'dashboard',
+      icon: DashboardIcon,
+      title: 'Dashboard',
+      action: handleBackToDashboard,
+      active: activeView === null,
+    },
+    {
+      id: 'camera',
+      icon: CameraAlt,
+      title: 'Kelola Kamera',
+      action: handleKelolaKamera,
+      active: activeView === 'camera-manager',
+    },
+    {
+      id: 'user',
+      icon: People,
+      title: 'Kelola User',
+      action: handleKelolaUser,
+      active: activeView === 'user-manager',
+    },
+    {
+      id: 'branch',
+      icon: Store,
+      title: 'Manajemen Cabang',
+      action: handleListCabang,
+      active: activeView === 'branch-manager',
+    },
+    {
+      id: 'reports',
+      icon: Assessment,
+      title: 'Laporan & Analitik',
+      action: handleReports,
+      active: activeView === 'reports',
+    },
+    {
+      id: 'staff',
+      icon: Face,
+      title: 'Manajemen Staff',
+      action: handleStaffFaces,
+      active: activeView === 'staff-faces',
+    },
+  ];
+
+  // Sidebar content
+  const drawerContent = (
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'auto' }}>
+      <Toolbar
+        sx={{
+          bgcolor: 'primary.main',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          minHeight: { xs: '56px', sm: '64px' },
+          px: { xs: 1.5, sm: 2 },
+        }}>
+        <DashboardIcon sx={{ mr: 1, fontSize: { xs: 20, sm: 24 } }} />
+        <Typography variant="h6" noWrap component="div" sx={{ fontWeight: 600, fontSize: { xs: '1rem', sm: '1.25rem' } }}>
+          CCTV Analytics
+        </Typography>
+      </Toolbar>
+      <Divider />
+      {user?.role === 'admin' && (
+        <>
+          <List sx={{ pt: { xs: 1, sm: 2 }, flexGrow: 1, overflow: 'auto' }}>
+            {adminMenuItems.map((item) => {
+              const IconComponent = item.icon;
+              return (
+                <ListItem key={item.id} disablePadding>
+                  <ListItemButton
+                    onClick={item.action}
+                    selected={item.active}
+                    sx={{
+                      mx: { xs: 0.5, sm: 1 },
+                      mb: { xs: 0.25, sm: 0.5 },
+                      borderRadius: 2,
+                      minHeight: { xs: 48, sm: 40 }, // Larger touch target for mobile
+                      py: { xs: 1.5, sm: 1 },
+                      px: { xs: 1.5, sm: 2 },
+                      '&.Mui-selected': {
+                        bgcolor: 'primary.main',
+                        color: 'white',
+                        '&:hover': {
+                          bgcolor: 'primary.dark',
+                        },
+                        '& .MuiListItemIcon-root': {
+                          color: 'white',
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor: 'action.hover',
+                      },
+                      '&:active': {
+                        bgcolor: 'action.selected',
+                      },
+                    }}>
+                    <ListItemIcon
+                      sx={{
+                        minWidth: { xs: 44, sm: 40 },
+                        color: item.active ? 'white' : 'inherit',
+                      }}>
+                      <IconComponent sx={{ fontSize: { xs: 24, sm: 20 } }} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={item.title}
+                      primaryTypographyProps={{
+                        fontSize: { xs: '0.95rem', sm: '0.875rem' },
+                        fontWeight: item.active ? 600 : 400,
+                      }}
+                    />
+                  </ListItemButton>
+                </ListItem>
+              );
+            })}
+          </List>
+          <Divider sx={{ my: { xs: 0.5, sm: 1 } }} />
+          <List>
+            <ListItem disablePadding>
+              <ListItemButton
+                onClick={() => setSettingsOpen(!settingsOpen)}
+                sx={{
+                  mx: { xs: 0.5, sm: 1 },
+                  borderRadius: 2,
+                  minHeight: { xs: 48, sm: 40 },
+                  py: { xs: 1.5, sm: 1 },
+                  px: { xs: 1.5, sm: 2 },
+                  '&:hover': {
+                    bgcolor: 'action.hover',
+                  },
+                  '&:active': {
+                    bgcolor: 'action.selected',
+                  },
+                }}>
+                <ListItemIcon sx={{ minWidth: { xs: 44, sm: 40 } }}>
+                  <Settings sx={{ fontSize: { xs: 24, sm: 20 } }} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Settings"
+                  primaryTypographyProps={{
+                    fontSize: { xs: '0.95rem', sm: '0.875rem' },
+                  }}
+                />
+                {settingsOpen ? <ExpandLess /> : <ExpandMore />}
+              </ListItemButton>
+            </ListItem>
+            <Collapse in={settingsOpen} timeout="auto" unmountOnExit>
+              <List component="div" disablePadding>
+                <ListItem sx={{ pl: { xs: 3, sm: 4 }, pr: { xs: 1.5, sm: 2 }, py: { xs: 1.5, sm: 1 } }}>
+                  <Box sx={{ width: '100%' }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: { xs: '0.875rem', sm: '0.8125rem' } }}>
+                      Background Service
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5, fontSize: { xs: '0.75rem', sm: '0.6875rem' } }}>
+                      {backgroundServiceStatus?.enabled ? `Aktif - ${backgroundServiceStatus.active_threads || 0} thread berjalan` : 'Nonaktif'}
+                    </Typography>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={backgroundServiceStatus?.enabled || false}
+                          onChange={handleToggleBackgroundService}
+                          disabled={backgroundServiceLoading || !backgroundServiceStatus}
+                          size="medium"
+                          sx={{
+                            '& .MuiSwitch-switchBase': {
+                              padding: { xs: 1, sm: 0.75 },
+                            },
+                          }}
+                        />
+                      }
+                      label={<Typography sx={{ fontSize: { xs: '0.875rem', sm: '0.8125rem' } }}>{backgroundServiceStatus?.enabled ? 'Aktif' : 'Nonaktif'}</Typography>}
+                    />
+                  </Box>
+                </ListItem>
+                <ListItem sx={{ pl: { xs: 3, sm: 4 }, pr: { xs: 1.5, sm: 2 }, py: { xs: 1, sm: 0.5 } }}>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    color="success"
+                    startIcon={analyzing ? <CircularProgress size={18} color="inherit" /> : <PlayArrow />}
+                    onClick={handleAnalyzeAll}
+                    disabled={analyzing}
+                    sx={{
+                      textTransform: 'none',
+                      minHeight: { xs: 44, sm: 36 },
+                      fontSize: { xs: '0.875rem', sm: '0.8125rem' },
+                      py: { xs: 1.5, sm: 1 },
+                    }}>
+                    {analyzing ? 'Memproses...' : 'Run Analysis'}
+                  </Button>
+                </ListItem>
+              </List>
+            </Collapse>
+          </List>
+        </>
+      )}
+      {user?.role === 'staff' && (
+        <List sx={{ pt: { xs: 1, sm: 2 }, flexGrow: 1 }}>
+          <ListItem disablePadding>
+            <ListItemButton
+              onClick={handleBackToDashboard}
+              selected={activeView === null}
+              sx={{
+                mx: { xs: 0.5, sm: 1 },
+                borderRadius: 2,
+                minHeight: { xs: 48, sm: 40 },
+                py: { xs: 1.5, sm: 1 },
+                px: { xs: 1.5, sm: 2 },
+                '&.Mui-selected': {
+                  bgcolor: 'primary.main',
+                  color: 'white',
+                  '&:hover': {
+                    bgcolor: 'primary.dark',
+                  },
+                },
+                '&:active': {
+                  bgcolor: 'action.selected',
+                },
+              }}>
+              <ListItemIcon sx={{ minWidth: { xs: 44, sm: 40 } }}>
+                <DashboardIcon sx={{ fontSize: { xs: 24, sm: 20 } }} />
+              </ListItemIcon>
+              <ListItemText
+                primary="Live Monitor"
+                primaryTypographyProps={{
+                  fontSize: { xs: '0.95rem', sm: '0.875rem' },
+                  fontWeight: activeView === null ? 600 : 400,
+                }}
+              />
+            </ListItemButton>
+          </ListItem>
+        </List>
+      )}
+      <Box sx={{ p: { xs: 1.5, sm: 2 }, borderTop: 1, borderColor: 'divider', flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: { xs: 1.5, sm: 1 } }}>
+          <Chip
+            label={user?.username || 'User'}
+            size="small"
+            sx={{
+              mr: 1,
+              bgcolor: 'action.selected',
+              fontSize: { xs: '0.75rem', sm: '0.6875rem' },
+              height: { xs: 28, sm: 24 },
+            }}
+          />
+        </Box>
+        <Button
+          fullWidth
+          variant="outlined"
+          startIcon={<Logout />}
+          onClick={handleLogout}
+          sx={{
+            textTransform: 'none',
+            minHeight: { xs: 44, sm: 36 },
+            fontSize: { xs: '0.875rem', sm: '0.8125rem' },
+            py: { xs: 1.5, sm: 1 },
+          }}>
+          Logout
+        </Button>
+      </Box>
+    </Box>
+  );
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', minHeight: '100vh', position: 'relative', zIndex: 1 }}>
-      <AppBar position="static" elevation={2}>
+    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+      {/* AppBar for mobile only */}
+      <AppBar
+        position="fixed"
+        sx={{
+          display: { xs: 'block', sm: 'none' },
+          bgcolor: 'primary.main',
+        }}>
         <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            Halo, {user?.username || 'User'}
+          <IconButton
+            color="inherit"
+            aria-label="open drawer"
+            edge="start"
+            onClick={handleDrawerToggle}
+            sx={{
+              mr: 2,
+              minWidth: 44,
+              minHeight: 44,
+            }}>
+            <MenuIcon />
+          </IconButton>
+          <Typography
+            variant="h6"
+            noWrap
+            component="div"
+            sx={{
+              flexGrow: 1,
+              fontWeight: 600,
+              fontSize: '1rem',
+            }}>
+            {activeView ? 'CCTV Analytics' : 'Dashboard Admin'}
           </Typography>
-          <Button color="inherit" startIcon={<Logout />} onClick={handleLogout}>
-            Logout
-          </Button>
         </Toolbar>
       </AppBar>
 
-      <Box sx={{ width: '100%', flex: 1, px: { xs: 1, sm: 2, md: 3 }, py: 2 }}>
+      {/* AppBar for desktop - untuk tombol toggle sidebar */}
+      <AppBar
+        position="fixed"
+        sx={{
+          display: { xs: 'none', sm: 'block' },
+          width: { sm: desktopOpen ? `calc(100% - ${DRAWER_WIDTH}px)` : '100%' },
+          ml: { sm: desktopOpen ? `${DRAWER_WIDTH}px` : 0 },
+          bgcolor: 'primary.main',
+          transition: 'width 0.3s, margin-left 0.3s',
+        }}>
+        <Toolbar>
+          <IconButton
+            color="inherit"
+            aria-label="toggle drawer"
+            edge="start"
+            onClick={handleDesktopDrawerToggle}
+            sx={{
+              mr: 2,
+              minWidth: 44,
+              minHeight: 44,
+            }}>
+            <MenuIcon />
+          </IconButton>
+          <Typography
+            variant="h6"
+            noWrap
+            component="div"
+            sx={{
+              flexGrow: 1,
+              fontWeight: 600,
+              fontSize: '1.25rem',
+            }}>
+            {activeView ? 'CCTV Analytics' : 'Dashboard Admin'}
+          </Typography>
+        </Toolbar>
+      </AppBar>
+
+      {/* Sidebar Drawer */}
+      <Box component="nav" sx={{ width: { sm: DRAWER_WIDTH }, flexShrink: { sm: 0 } }}>
+        <Drawer
+          variant="temporary"
+          open={mobileOpen}
+          onClose={handleDrawerToggle}
+          ModalProps={{
+            keepMounted: true, // Better open performance on mobile.
+          }}
+          sx={{
+            display: { xs: 'block', sm: 'none' },
+            '& .MuiDrawer-paper': {
+              boxSizing: 'border-box',
+              width: { xs: '85vw', sm: DRAWER_WIDTH },
+              maxWidth: DRAWER_WIDTH,
+            },
+            '& .MuiBackdrop-root': {
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            },
+          }}>
+          {drawerContent}
+        </Drawer>
+        <Drawer
+          variant="persistent"
+          open={desktopOpen}
+          sx={{
+            display: { xs: 'none', sm: 'block' },
+            '& .MuiDrawer-paper': {
+              boxSizing: 'border-box',
+              width: DRAWER_WIDTH,
+              position: 'relative',
+              height: '100vh',
+              overflow: 'hidden',
+              transition: 'width 0.3s',
+            },
+          }}>
+          {drawerContent}
+        </Drawer>
+      </Box>
+
+      {/* Main Content */}
+      <Box
+        component="main"
+        sx={{
+          flexGrow: 1,
+          p: { xs: 2, sm: 3 },
+          width: { sm: desktopOpen ? `calc(100% - ${DRAWER_WIDTH}px)` : '100%' },
+          mt: { xs: 7, sm: 7 },
+          overflow: 'auto',
+          transition: 'width 0.3s',
+        }}>
         {user?.role === 'admin' ? (
-          activeView === 'camera-manager' ? (
+          activeView ? (
             <Box>
-              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
-                Kembali ke Dashboard
-              </Button>
-              <CameraManager onSetupZona={handleLiveMonitor} />
-            </Box>
-          ) : activeView === 'user-manager' ? (
-            <Box>
-              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
-                Kembali ke Dashboard
-              </Button>
-              <UserManager />
-            </Box>
-          ) : activeView === 'branch-manager' ? (
-            <Box>
-              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
-                Kembali ke Dashboard
-              </Button>
-              <BranchManager />
-            </Box>
-          ) : activeView === 'reports' ? (
-            <Box>
-              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
-                Kembali ke Dashboard
-              </Button>
-              <Reports />
-            </Box>
-          ) : activeView?.startsWith('live-monitor-') ? (
-            <Box sx={{ width: '100%' }}>
-              <Button startIcon={<ArrowBack />} onClick={handleBackToDashboard} sx={{ mb: 2 }}>
-                Kembali ke Dashboard
-              </Button>
-              <LiveMonitor branchId={parseInt(activeView.split('-')[2])} />
+              {analysisResult && (
+                <Alert
+                  severity={analysisResult.type}
+                  sx={{
+                    mb: 3,
+                    '& .MuiAlert-message': {
+                      fontSize: { xs: '0.875rem', sm: '1rem' },
+                    },
+                  }}
+                  onClose={() => setAnalysisResult(null)}>
+                  {analysisResult.message}
+                </Alert>
+              )}
+              {renderSubView()}
             </Box>
           ) : (
             <Box>
-              <Typography variant="h4" component="h1" gutterBottom fontWeight="bold">
+              <Typography variant="h4" component="h1" gutterBottom fontWeight="bold" color="text.primary" sx={{ fontSize: { xs: '1.75rem', sm: '2.125rem' } }}>
                 Dashboard Admin
               </Typography>
+              <Typography variant="body1" color="text.secondary" sx={{ mb: { xs: 3, sm: 4 }, fontSize: { xs: '0.875rem', sm: '1rem' } }}>
+                Kelola sistem CCTV Analytics Anda dari sini
+              </Typography>
+
               {analysisResult && (
-                <Alert severity={analysisResult.type} sx={{ mb: 2 }} onClose={() => setAnalysisResult(null)}>
+                <Alert
+                  severity={analysisResult.type}
+                  sx={{
+                    mb: 3,
+                    '& .MuiAlert-message': {
+                      fontSize: { xs: '0.875rem', sm: '1rem' },
+                    },
+                  }}
+                  onClose={() => setAnalysisResult(null)}>
                   {analysisResult.message}
                 </Alert>
               )}
 
-              <Grid container spacing={3} sx={{ mt: 2 }}>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <CameraAlt sx={{ fontSize: 48, color: 'primary.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Kelola Kamera
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Tambah, edit, dan kelola kamera CCTV
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      <Button fullWidth variant="contained" startIcon={<CameraAlt />} onClick={handleKelolaKamera}>
-                        Buka
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <People sx={{ fontSize: 48, color: 'secondary.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Kelola User
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Tambah, edit, dan kelola user (admin & staff)
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      <Button fullWidth variant="contained" color="secondary" startIcon={<People />} onClick={handleKelolaUser}>
-                        Buka
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <Analytics sx={{ fontSize: 48, color: 'success.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Run Analysis
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Jalankan analisis AI untuk semua kamera (billing, alerts, zone states)
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      <Button fullWidth variant="contained" color="success" startIcon={analyzing ? <CircularProgress size={20} /> : <PlayArrow />} onClick={handleAnalyzeAll} disabled={analyzing}>
-                        {analyzing ? 'Memproses...' : 'Jalankan Analisis'}
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <Store sx={{ fontSize: 48, color: 'primary.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Manajemen Cabang
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Lihat semua cabang, kamera, zona, dan statistik
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      <Button fullWidth variant="contained" startIcon={<Store />} onClick={handleListCabang}>
-                        Buka
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <Settings sx={{ fontSize: 48, color: backgroundServiceStatus?.enabled ? 'success.main' : 'error.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Background Service
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        {backgroundServiceStatus?.enabled ? `Aktif - ${backgroundServiceStatus.active_threads || 0} thread berjalan` : 'Nonaktif - Deteksi otomatis dimatikan'}
-                      </Typography>
-                      <FormControlLabel
-                        control={<Switch checked={backgroundServiceStatus?.enabled || false} onChange={handleToggleBackgroundService} disabled={backgroundServiceLoading || !backgroundServiceStatus} color="primary" />}
-                        label={backgroundServiceStatus?.enabled ? 'Aktif' : 'Nonaktif'}
-                      />
-                    </CardContent>
-                  </Card>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <Card elevation={3}>
-                    <CardContent>
-                      <Assessment sx={{ fontSize: 48, color: 'info.main', mb: 2 }} />
-                      <Typography variant="h6" component="h2" gutterBottom>
-                        Laporan & Analitik
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Lihat laporan meja terisi, antrian penuh, dan statistik lainnya
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      <Button fullWidth variant="contained" color="info" startIcon={<Assessment />} onClick={handleReports}>
-                        Buka Laporan
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </Grid>
-              </Grid>
+              <Paper
+                elevation={2}
+                sx={{
+                  p: { xs: 2.5, sm: 4 },
+                  borderRadius: 3,
+                }}>
+                <Typography variant="h6" gutterBottom sx={{ mb: { xs: 2, sm: 3 }, fontSize: { xs: '1.125rem', sm: '1.25rem' } }}>
+                  Selamat Datang
+                </Typography>
+                <Typography variant="body1" color="text.secondary" paragraph sx={{ fontSize: { xs: '0.875rem', sm: '1rem' } }}>
+                  Gunakan menu di sidebar untuk mengakses berbagai fitur manajemen sistem.
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}>
+                  Pilih menu dari sidebar untuk mulai mengelola kamera, user, cabang, dan lainnya.
+                </Typography>
+              </Paper>
             </Box>
           )
         ) : user?.role === 'staff' ? (
-          <Box sx={{ width: '100%' }}>
-            <Typography variant="h4" component="h1" gutterBottom fontWeight="bold">
-              Cabang Saya (ID: {user?.branch_id || 'N/A'})
-            </Typography>
+          <Box>
+            <Paper elevation={2} sx={{ p: { xs: 2, sm: 3 }, mb: 3 }}>
+              <Typography variant="h5" component="h1" gutterBottom fontWeight="bold" sx={{ fontSize: { xs: '1.5rem', sm: '1.75rem' } }}>
+                Cabang Saya
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}>
+                ID Cabang: {user?.branch_id || 'N/A'}
+              </Typography>
+            </Paper>
             <LiveMonitor branchId={user?.branch_id} />
           </Box>
         ) : (
-          <Box sx={{ textAlign: 'center', mt: 4 }}>
+          <Box sx={{ textAlign: 'center', mt: 8 }}>
+            <CircularProgress sx={{ mb: 2 }} />
             <Typography variant="h6" color="text.secondary">
               Memuat dashboard...
             </Typography>

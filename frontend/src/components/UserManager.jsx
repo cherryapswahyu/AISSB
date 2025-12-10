@@ -119,11 +119,20 @@ const UserManager = () => {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" component="h2" fontWeight="bold">
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: { xs: 'flex-start', sm: 'center' },
+          mb: 3,
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: { xs: 2, sm: 2 },
+          flexWrap: { xs: 'nowrap', sm: 'nowrap' },
+        }}>
+        <Typography variant="h5" component="h2" fontWeight="bold" sx={{ mb: { xs: 0, sm: 0 }, flexShrink: 0 }}>
           Kelola User
         </Typography>
-        <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)}>
+        <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)} size="medium" sx={{ width: { xs: '100%', sm: 'auto' }, flexShrink: 0, whiteSpace: 'nowrap' }}>
           {showAddForm ? 'Batal' : 'Tambah User'}
         </Button>
       </Box>
@@ -179,8 +188,8 @@ const UserManager = () => {
           </Typography>
         </Paper>
       ) : (
-        <TableContainer component={Paper} elevation={3}>
-          <Table>
+        <TableContainer component={Paper} elevation={3} sx={{ maxHeight: 'calc(100vh - 300px)', overflow: 'auto' }}>
+          <Table stickyHeader>
             <TableHead>
               <TableRow>
                 <TableCell>

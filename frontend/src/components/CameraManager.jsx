@@ -157,15 +157,24 @@ const CameraManager = ({ onSetupZona }) => {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" component="h2" fontWeight="bold">
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: { xs: 'flex-start', sm: 'center' },
+          mb: 3,
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: { xs: 2, sm: 2 },
+          flexWrap: { xs: 'nowrap', sm: 'nowrap' },
+        }}>
+        <Typography variant="h5" component="h2" fontWeight="bold" sx={{ mb: { xs: 0, sm: 0 }, flexShrink: 0 }}>
           Kelola Kamera
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button variant="outlined" color="error" startIcon={<DeleteSweep />} onClick={handleCleanupNoZones} disabled={deleting || cameras.length === 0}>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: { xs: 'wrap', sm: 'nowrap' }, width: { xs: '100%', sm: 'auto' }, justifyContent: { xs: 'flex-end', sm: 'flex-start' }, flexShrink: 0, minWidth: 0 }}>
+          <Button variant="outlined" color="error" startIcon={<DeleteSweep />} onClick={handleCleanupNoZones} disabled={deleting || cameras.length === 0} size="medium" sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
             Hapus Tanpa Zona
           </Button>
-          <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)}>
+          <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)} size="medium" sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
             {showAddForm ? 'Batal' : 'Tambah Kamera'}
           </Button>
         </Box>
@@ -220,8 +229,8 @@ const CameraManager = ({ onSetupZona }) => {
           </Typography>
         </Paper>
       ) : (
-        <TableContainer component={Paper} elevation={3}>
-          <Table>
+        <TableContainer component={Paper} elevation={3} sx={{ maxHeight: 'calc(100vh - 300px)', overflow: 'auto' }}>
+          <Table stickyHeader>
             <TableHead>
               <TableRow>
                 <TableCell>

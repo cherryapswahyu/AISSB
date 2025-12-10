@@ -173,15 +173,24 @@ const BranchManager = () => {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" component="h2" fontWeight="bold">
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: { xs: 'flex-start', sm: 'center' },
+          mb: 3,
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: { xs: 2, sm: 2 },
+          flexWrap: { xs: 'nowrap', sm: 'nowrap' },
+        }}>
+        <Typography variant="h5" component="h2" fontWeight="bold" sx={{ mb: { xs: 0, sm: 0 }, flexShrink: 0 }}>
           Manajemen Cabang
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button variant="outlined" onClick={loadBranches}>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: { xs: 'wrap', sm: 'nowrap' }, width: { xs: '100%', sm: 'auto' }, justifyContent: { xs: 'flex-end', sm: 'flex-start' }, flexShrink: 0, minWidth: 0 }}>
+          <Button variant="outlined" onClick={loadBranches} size="medium" sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
             Refresh
           </Button>
-          <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)}>
+          <Button variant="contained" startIcon={<Add />} onClick={() => setShowAddForm(!showAddForm)} size="medium" sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
             {showAddForm ? 'Batal' : 'Tambah Cabang'}
           </Button>
         </Box>
@@ -335,8 +344,8 @@ const BranchManager = () => {
                       <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
                         Billing Terbaru:
                       </Typography>
-                      <TableContainer>
-                        <Table size="small">
+                      <TableContainer sx={{ maxHeight: 200, overflow: 'auto' }}>
+                        <Table size="small" stickyHeader>
                           <TableHead>
                             <TableRow>
                               <TableCell>Zona</TableCell>

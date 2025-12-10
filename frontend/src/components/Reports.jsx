@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { reportsAPI, cameraAPI } from '../services/api';
+import { reportsAPI, cameraAPI, branchAPI } from '../services/api';
 import {
   Box,
   Paper,
@@ -30,9 +30,12 @@ import { Assessment, TableRestaurant, People, AccessTime } from '@mui/icons-mate
 const Reports = () => {
   const [tabValue, setTabValue] = useState(0);
   const [cameras, setCameras] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [groupBy, setGroupBy] = useState('day');
 
   // Table occupancy data
   const [tableData, setTableData] = useState(null);
@@ -44,8 +47,14 @@ const Reports = () => {
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueError, setQueueError] = useState('');
 
+  // Customer data
+  const [customerData, setCustomerData] = useState(null);
+  const [customerLoading, setCustomerLoading] = useState(false);
+  const [customerError, setCustomerError] = useState('');
+
   useEffect(() => {
     loadCameras();
+    loadBranches();
     // Set default date range (hari ini)
     const today = new Date().toISOString().split('T')[0];
     setStartDate(today);
@@ -55,10 +64,12 @@ const Reports = () => {
   useEffect(() => {
     if (tabValue === 0) {
       loadTableReport();
-    } else {
+    } else if (tabValue === 1) {
       loadQueueReport();
+    } else if (tabValue === 2) {
+      loadCustomerReport();
     }
-  }, [tabValue, selectedCamera, startDate, endDate]);
+  }, [tabValue, selectedCamera, selectedBranch, startDate, endDate, groupBy]);
 
   const loadCameras = async () => {
     try {
@@ -69,11 +80,20 @@ const Reports = () => {
     }
   };
 
+  const loadBranches = async () => {
+    try {
+      const data = await branchAPI.getAll();
+      setBranches(data);
+    } catch (error) {
+      console.error('Error loading branches:', error);
+    }
+  };
+
   const loadTableReport = async () => {
     setTableLoading(true);
     setTableError('');
     try {
-      const data = await reportsAPI.getTableOccupancy(selectedCamera || null, startDate || null, endDate || null);
+      const data = await reportsAPI.getTableOccupancy(selectedCamera || null, startDate || null, endDate || null, groupBy);
       setTableData(data);
     } catch (error) {
       setTableError('Gagal memuat laporan meja: ' + (error.response?.data?.detail || error.message));
@@ -87,7 +107,7 @@ const Reports = () => {
     setQueueLoading(true);
     setQueueError('');
     try {
-      const data = await reportsAPI.getQueueReport(selectedCamera || null, startDate || null, endDate || null);
+      const data = await reportsAPI.getQueueReport(selectedCamera || null, startDate || null, endDate || null, groupBy);
       setQueueData(data);
     } catch (error) {
       setQueueError('Gagal memuat laporan antrian: ' + (error.response?.data?.detail || error.message));
@@ -97,14 +117,18 @@ const Reports = () => {
     }
   };
 
-  const formatDuration = (seconds) => {
-    if (!seconds) return '0 detik';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins > 0) {
-      return `${mins} menit ${secs} detik`;
+  const loadCustomerReport = async () => {
+    setCustomerLoading(true);
+    setCustomerError('');
+    try {
+      const data = await reportsAPI.getCustomerReport(selectedBranch || null, startDate || null, endDate || null, groupBy);
+      setCustomerData(data);
+    } catch (error) {
+      setCustomerError('Gagal memuat laporan pengunjung: ' + (error.response?.data?.detail || error.message));
+      setCustomerData(null);
+    } finally {
+      setCustomerLoading(false);
     }
-    return `${secs} detik`;
   };
 
   return (
@@ -117,27 +141,60 @@ const Reports = () => {
       {/* Filter Section */}
       <Paper elevation={2} sx={{ p: 2, mb: 3 }}>
         <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} md={3}>
+          {tabValue !== 2 ? (
+            <Grid item xs={12} md={2.4}>
+              <FormControl fullWidth>
+                <InputLabel>Kamera</InputLabel>
+                <Select value={selectedCamera} label="Kamera" onChange={(e) => setSelectedCamera(e.target.value)}>
+                  <MenuItem value="">Semua Kamera</MenuItem>
+                  {cameras.map((cam) => (
+                    <MenuItem key={cam.id} value={cam.id}>
+                      Camera {cam.id} - {cam.branch_name || 'N/A'}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+          ) : (
+            <Grid item xs={12} md={2.4}>
+              <FormControl fullWidth>
+                <InputLabel>Cabang</InputLabel>
+                <Select value={selectedBranch} label="Cabang" onChange={(e) => setSelectedBranch(e.target.value)}>
+                  <MenuItem value="">Semua Cabang</MenuItem>
+                  {branches.map((branch) => (
+                    <MenuItem key={branch.id} value={branch.id}>
+                      {branch.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+          )}
+          <Grid item xs={12} md={2.4}>
+            <TextField fullWidth label="Tanggal Mulai" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} InputLabelProps={{ shrink: true }} />
+          </Grid>
+          <Grid item xs={12} md={2.4}>
+            <TextField fullWidth label="Tanggal Akhir" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} InputLabelProps={{ shrink: true }} />
+          </Grid>
+          <Grid item xs={12} md={2.4}>
             <FormControl fullWidth>
-              <InputLabel>Kamera</InputLabel>
-              <Select value={selectedCamera} label="Kamera" onChange={(e) => setSelectedCamera(e.target.value)}>
-                <MenuItem value="">Semua Kamera</MenuItem>
-                {cameras.map((cam) => (
-                  <MenuItem key={cam.id} value={cam.id}>
-                    Camera {cam.id} - {cam.branch_name || 'N/A'}
-                  </MenuItem>
-                ))}
+              <InputLabel>Group By</InputLabel>
+              <Select value={groupBy} label="Group By" onChange={(e) => setGroupBy(e.target.value)}>
+                <MenuItem value="day">Per Hari</MenuItem>
+                <MenuItem value="month">Per Bulan</MenuItem>
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} md={3}>
-            <TextField fullWidth label="Tanggal Mulai" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} InputLabelProps={{ shrink: true }} />
-          </Grid>
-          <Grid item xs={12} md={3}>
-            <TextField fullWidth label="Tanggal Akhir" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} InputLabelProps={{ shrink: true }} />
-          </Grid>
-          <Grid item xs={12} md={3}>
-            <Button fullWidth variant="contained" onClick={tabValue === 0 ? loadTableReport : loadQueueReport} sx={{ height: '56px' }}>
+          <Grid item xs={12} md={2.4}>
+            <Button
+              fullWidth
+              variant="contained"
+              onClick={() => {
+                if (tabValue === 0) loadTableReport();
+                else if (tabValue === 1) loadQueueReport();
+                else if (tabValue === 2) loadCustomerReport();
+              }}
+              sx={{ height: '56px' }}>
               Refresh
             </Button>
           </Grid>
@@ -149,6 +206,7 @@ const Reports = () => {
         <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)}>
           <Tab icon={<TableRestaurant />} iconPosition="start" label="Laporan Meja Terisi" />
           <Tab icon={<People />} iconPosition="start" label="Laporan Antrian Penuh" />
+          <Tab icon={<AccessTime />} iconPosition="start" label="Laporan Pengunjung" />
         </Tabs>
       </Paper>
 
@@ -213,13 +271,60 @@ const Reports = () => {
                 </Grid>
               </Grid>
 
+              {/* Daily/Monthly Summary */}
+              {tableData.daily_summary && tableData.daily_summary.length > 0 && (
+                <Paper elevation={2} sx={{ mb: 3 }}>
+                  <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="h6">Rekap {groupBy === 'day' ? 'Per Hari' : 'Per Bulan'}</Typography>
+                  </Box>
+                  <TableContainer sx={{ maxHeight: 400, overflow: 'auto' }}>
+                    <Table stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>
+                            <strong>Tanggal</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Sesi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Durasi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Rata-rata Durasi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Meja Terisi</strong>
+                          </TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(tableData.daily_summary || tableData.monthly_summary).map((row, idx) => (
+                          <TableRow key={idx} hover>
+                            <TableCell>
+                              {groupBy === 'day'
+                                ? new Date(row.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+                                : new Date(row.date + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                            </TableCell>
+                            <TableCell align="right">{row.total_sessions}</TableCell>
+                            <TableCell align="right">{row.total_duration_formatted}</TableCell>
+                            <TableCell align="right">{row.avg_duration_formatted}</TableCell>
+                            <TableCell align="right">{row.total_tables_occupied}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )}
+
               {/* Table Summary */}
               <Paper elevation={2} sx={{ mb: 3 }}>
                 <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
                   <Typography variant="h6">Rekap per Meja</Typography>
                 </Box>
-                <TableContainer>
-                  <Table>
+                <TableContainer sx={{ maxHeight: 400, overflow: 'auto' }}>
+                  <Table stickyHeader>
                     <TableHead>
                       <TableRow>
                         <TableCell>
@@ -380,13 +485,60 @@ const Reports = () => {
                 </Grid>
               </Grid>
 
+              {/* Daily/Monthly Summary */}
+              {(queueData.daily_summary || queueData.monthly_summary) && (queueData.daily_summary || queueData.monthly_summary).length > 0 && (
+                <Paper elevation={2} sx={{ mb: 3 }}>
+                  <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="h6">Rekap {groupBy === 'day' ? 'Per Hari' : 'Per Bulan'}</Typography>
+                  </Box>
+                  <TableContainer sx={{ maxHeight: 400, overflow: 'auto' }}>
+                    <Table stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>
+                            <strong>Tanggal</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Sesi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Durasi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Rata-rata Durasi</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Max Durasi</strong>
+                          </TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(queueData.daily_summary || queueData.monthly_summary).map((row, idx) => (
+                          <TableRow key={idx} hover>
+                            <TableCell>
+                              {groupBy === 'day'
+                                ? new Date(row.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+                                : new Date(row.date + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                            </TableCell>
+                            <TableCell align="right">{row.total_sessions}</TableCell>
+                            <TableCell align="right">{row.total_duration_formatted}</TableCell>
+                            <TableCell align="right">{row.avg_duration_formatted}</TableCell>
+                            <TableCell align="right">{row.max_duration_formatted}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )}
+
               {/* Zone Summary */}
               <Paper elevation={2} sx={{ mb: 3 }}>
                 <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
                   <Typography variant="h6">Rekap per Zone</Typography>
                 </Box>
-                <TableContainer>
-                  <Table>
+                <TableContainer sx={{ maxHeight: 400, overflow: 'auto' }}>
+                  <Table stickyHeader>
                     <TableHead>
                       <TableRow>
                         <TableCell>
@@ -480,6 +632,177 @@ const Reports = () => {
                             <TableCell align="right">
                               <Chip label={detail.max_queue_count} size="small" color="error" />
                             </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Paper>
+            </>
+          )}
+        </Box>
+      )}
+
+      {/* Customer Report */}
+      {tabValue === 2 && (
+        <Box>
+          {customerLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+              <CircularProgress />
+            </Box>
+          )}
+
+          {customerError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {customerError}
+            </Alert>
+          )}
+
+          {customerData && !customerLoading && (
+            <>
+              {/* Summary Cards */}
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={12} md={3}>
+                  <Card>
+                    <CardContent>
+                      <Typography color="text.secondary" gutterBottom>
+                        Total Pengunjung
+                      </Typography>
+                      <Typography variant="h4">{customerData.summary.total_customers}</Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Card>
+                    <CardContent>
+                      <Typography color="text.secondary" gutterBottom>
+                        Regular
+                      </Typography>
+                      <Typography variant="h4" color="success.main">
+                        {customerData.summary.regular_customers}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Card>
+                    <CardContent>
+                      <Typography color="text.secondary" gutterBottom>
+                        New
+                      </Typography>
+                      <Typography variant="h4" color="warning.main">
+                        {customerData.summary.new_customers}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <Card>
+                    <CardContent>
+                      <Typography color="text.secondary" gutterBottom>
+                        Total Kunjungan
+                      </Typography>
+                      <Typography variant="h4">{customerData.summary.total_visits}</Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              {/* Daily/Monthly Summary */}
+              {(customerData.daily_summary || customerData.monthly_summary) && (customerData.daily_summary || customerData.monthly_summary).length > 0 && (
+                <Paper elevation={2} sx={{ mb: 3 }}>
+                  <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="h6">Rekap {groupBy === 'day' ? 'Per Hari' : 'Per Bulan'}</Typography>
+                  </Box>
+                  <TableContainer sx={{ maxHeight: 400, overflow: 'auto' }}>
+                    <Table stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>
+                            <strong>Tanggal</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Pengunjung</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Regular</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>New</strong>
+                          </TableCell>
+                          <TableCell align="right">
+                            <strong>Total Kunjungan</strong>
+                          </TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(customerData.daily_summary || customerData.monthly_summary).map((row, idx) => (
+                          <TableRow key={idx} hover>
+                            <TableCell>
+                              {groupBy === 'day'
+                                ? new Date(row.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+                                : new Date(row.date + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                            </TableCell>
+                            <TableCell align="right">{row.total_customers}</TableCell>
+                            <TableCell align="right">
+                              <Chip label={row.regular_customers} size="small" color="success" variant="outlined" />
+                            </TableCell>
+                            <TableCell align="right">
+                              <Chip label={row.new_customers} size="small" color="warning" variant="outlined" />
+                            </TableCell>
+                            <TableCell align="right">{row.visits}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )}
+
+              {/* Detail Table */}
+              <Paper elevation={2}>
+                <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+                  <Typography variant="h6">Detail Pengunjung</Typography>
+                </Box>
+                <TableContainer sx={{ maxHeight: 600 }}>
+                  <Table stickyHeader size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>
+                          <strong>Tanggal</strong>
+                        </TableCell>
+                        <TableCell>
+                          <strong>Tipe</strong>
+                        </TableCell>
+                        <TableCell align="right">
+                          <strong>Visit Count</strong>
+                        </TableCell>
+                        <TableCell>
+                          <strong>First Seen</strong>
+                        </TableCell>
+                        <TableCell>
+                          <strong>Last Seen</strong>
+                        </TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {customerData.details.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                            <Typography color="text.secondary">Tidak ada data</Typography>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        customerData.details.map((detail, idx) => (
+                          <TableRow key={idx} hover>
+                            <TableCell>{new Date(detail.date).toLocaleDateString('id-ID')}</TableCell>
+                            <TableCell>
+                              <Chip label={detail.customer_type === 'regular' ? 'Regular' : 'New'} size="small" color={detail.customer_type === 'regular' ? 'success' : 'warning'} />
+                            </TableCell>
+                            <TableCell align="right">{detail.visit_count}</TableCell>
+                            <TableCell>{new Date(detail.first_seen).toLocaleString('id-ID')}</TableCell>
+                            <TableCell>{new Date(detail.last_seen).toLocaleString('id-ID')}</TableCell>
                           </TableRow>
                         ))
                       )}

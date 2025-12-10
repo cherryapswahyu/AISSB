@@ -1,7 +1,34 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 DB_NAME = "soto_cloud.db"
+
+# Timezone WIB (UTC+7)
+WIB_TZ = timezone(timedelta(hours=7))
+
+def get_wib_datetime():
+    """
+    Mendapatkan waktu saat ini dalam timezone WIB (UTC+7)
+    Returns: string format 'YYYY-MM-DD HH:MM:SS' dalam WIB
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc.astimezone(WIB_TZ)
+    return now_wib.strftime('%Y-%m-%d %H:%M:%S')
+
+def get_wib_datetime_offset(days=0, seconds=0, minutes=0, hours=0):
+    """
+    Mendapatkan waktu dengan offset tertentu dalam timezone WIB (UTC+7)
+    Args:
+        days: offset dalam hari (bisa negatif)
+        seconds: offset dalam detik (bisa negatif)
+        minutes: offset dalam menit (bisa negatif)
+        hours: offset dalam jam (bisa negatif)
+    Returns: string format 'YYYY-MM-DD HH:MM:SS' dalam WIB
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_wib = now_utc.astimezone(WIB_TZ)
+    offset_time = now_wib + timedelta(days=days, seconds=seconds, minutes=minutes, hours=hours)
+    return offset_time.strftime('%Y-%m-%d %H:%M:%S')
 
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME)
@@ -45,7 +72,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         camera_id INTEGER,
         name TEXT,
-        type TEXT, -- 'table', 'queue', 'refill', 'restricted'
+        type TEXT, -- 'table', 'kasir', 'gorengan', 'queue', 'dapur'
         coords TEXT, -- JSON String
         FOREIGN KEY(camera_id) REFERENCES cameras(id)
     )''')
@@ -107,6 +134,50 @@ def init_db():
         status TEXT DEFAULT 'completed',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
+    
+    # --- BARU: TABEL CUSTOMER LOG (Tracking Pengunjung GLOBAL) ---
+    # Menyimpan history pengunjung untuk membedakan lama vs baru (GLOBAL, tidak terpaut zone)
+    conn.execute('''CREATE TABLE IF NOT EXISTS customer_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        face_embedding_hash TEXT NOT NULL UNIQUE,
+        first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+        visit_count INTEGER DEFAULT 1,
+        customer_type TEXT DEFAULT 'new',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # Migrasi: Tambahkan kolom camera_id dan branch_id jika belum ada (untuk database existing)
+    try:
+        cursor = conn.execute("PRAGMA table_info(customer_log)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'camera_id' not in columns:
+            conn.execute("ALTER TABLE customer_log ADD COLUMN camera_id INTEGER")
+        if 'branch_id' not in columns:
+            conn.execute("ALTER TABLE customer_log ADD COLUMN branch_id INTEGER")
+        conn.commit()
+    except Exception as e:
+        print(f"Note: Migration for customer_log columns: {e}")
+    
+    # Buat index setelah kolom sudah ada
+    conn.execute('''CREATE INDEX IF NOT EXISTS idx_customer_hash 
+                    ON customer_log(face_embedding_hash)''')
+    
+    conn.execute('''CREATE INDEX IF NOT EXISTS idx_customer_last_seen 
+                    ON customer_log(last_seen)''')
+    
+    # Hanya buat index jika kolom sudah ada
+    try:
+        cursor = conn.execute("PRAGMA table_info(customer_log)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'camera_id' in columns:
+            conn.execute('''CREATE INDEX IF NOT EXISTS idx_customer_camera_id 
+                            ON customer_log(camera_id)''')
+        if 'branch_id' in columns:
+            conn.execute('''CREATE INDEX IF NOT EXISTS idx_customer_branch_id 
+                            ON customer_log(branch_id)''')
+    except Exception as e:
+        print(f"Note: Error creating indexes: {e}")
     
     # 4. Tabel Master Cabang (Baru)
     conn.execute('''CREATE TABLE IF NOT EXISTS branches (

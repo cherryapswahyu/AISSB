@@ -2,7 +2,30 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { snapshotAPI, zoneAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import './ZoneEditor.css';
+import {
+  Box,
+  Typography,
+  Button,
+  Paper,
+  Alert,
+  CircularProgress,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Chip,
+  List,
+  ListItem,
+  ListItemText,
+  IconButton,
+  Divider,
+} from '@mui/material';
+import { Refresh, Delete, Info, CheckCircle, Warning } from '@mui/icons-material';
 
 const ZoneEditor = ({ cameraId: propCameraId }) => {
   const { id } = useParams(); // Ambil ID kamera dari URL params
@@ -290,33 +313,65 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
   };
 
   return (
-    <div className="zone-editor">
-      <h3>Atur Zona - Kamera ID: {cameraId}</h3>
-
-      <div className="zone-editor-controls">
-        <button onClick={loadSnapshot} className="refresh-button">
+    <Box>
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: { xs: 'flex-start', sm: 'center' },
+          mb: 3,
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: { xs: 2, sm: 2 },
+          flexWrap: { xs: 'nowrap', sm: 'nowrap' },
+        }}>
+        <Typography variant="h6" component="h3" fontWeight="bold" sx={{ flexShrink: 0 }}>
+          Atur Zona - Kamera ID: {cameraId}
+        </Typography>
+        <Button variant="outlined" startIcon={<Refresh />} onClick={loadSnapshot} disabled={loading} sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
           Refresh Snapshot
-        </button>
-        <div className="zone-info">
-          <p>
-            <strong>Instruksi:</strong> Klik dan drag pada gambar untuk membuat zona baru
-          </p>
-          <p>
-            <span style={{ color: '#00ff00' }}>●</span> Hijau = Meja |<span style={{ color: '#ffa500' }}> ●</span> Oranye = Tempat Gorengan |<span style={{ color: '#0000ff' }}> ●</span> Biru = Kasir
-          </p>
-        </div>
-      </div>
+        </Button>
+      </Box>
 
-      {loading && <div className="loading">Memuat snapshot...</div>}
-      {error && <div className="error-message">{error}</div>}
+      <Paper elevation={2} sx={{ p: 2, mb: 2, bgcolor: 'info.light', color: 'info.contrastText' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <Info />
+          <Typography variant="body2" fontWeight="bold">
+            Instruksi:
+          </Typography>
+        </Box>
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          Klik dan drag pada gambar untuk membuat zona baru
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <Chip label="Hijau = Meja" size="small" sx={{ bgcolor: '#00ff00', color: 'white' }} />
+          <Chip label="Oranye = Tempat Gorengan" size="small" sx={{ bgcolor: '#ffa500', color: 'white' }} />
+          <Chip label="Biru = Kasir" size="small" sx={{ bgcolor: '#0000ff', color: 'white' }} />
+        </Box>
+      </Paper>
 
-      <div className="canvas-container">
-        <canvas
+      {loading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
+          <CircularProgress />
+          <Typography variant="body1" sx={{ ml: 2 }}>
+            Memuat snapshot...
+          </Typography>
+        </Box>
+      )}
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+          {error}
+        </Alert>
+      )}
+
+      <Paper elevation={2} sx={{ p: 2, display: 'flex', justifyContent: 'center', bgcolor: '#000' }}>
+        <Box
+          component="canvas"
           ref={canvasRef}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          style={{
+          sx={{
             border: '1px solid #ddd',
             cursor: 'crosshair',
             maxWidth: '100%',
@@ -324,97 +379,114 @@ const ZoneEditor = ({ cameraId: propCameraId }) => {
             display: image ? 'block' : 'none',
           }}
         />
-      </div>
+      </Paper>
 
       {/* Save Dialog */}
-      {showSaveDialog && (
-        <div className="save-dialog-overlay" onClick={handleCancelSave}>
-          <div className="save-dialog" onClick={(e) => e.stopPropagation()}>
-            <h4>Simpan Zona Baru</h4>
-            {error && (
-              <div className="error-message" style={{ marginBottom: '15px', padding: '10px', background: '#fee', color: '#c33', borderRadius: '4px', fontSize: '14px' }}>
-                {error}
-              </div>
-            )}
-            {!currentRect && (
-              <div style={{ marginBottom: '15px', padding: '10px', background: '#fff3cd', color: '#856404', borderRadius: '4px', fontSize: '14px' }}>
-                ⚠️ Zona belum digambar. Silakan gambar zona terlebih dahulu dengan klik dan drag pada canvas.
-              </div>
-            )}
-            {currentRect && (
-              <div style={{ marginBottom: '15px', padding: '8px', background: '#e7f3ff', color: '#0066cc', borderRadius: '4px', fontSize: '12px' }}>
-                ✓ Zona sudah digambar ({Math.round(currentRect.width)}x{Math.round(currentRect.height)} px)
-                <br />
-                <small>
-                  Camera ID: {cameraId} | User: {user?.username} ({user?.role})
-                </small>
-              </div>
-            )}
-            {!isAdmin && <div style={{ marginBottom: '15px', padding: '10px', background: '#fee', color: '#c33', borderRadius: '4px', fontSize: '14px' }}>⚠️ Hanya Admin yang dapat menyimpan zona. Role Anda: {user?.role || 'Unknown'}</div>}
-            <div className="form-group">
-              <label htmlFor="zone-name">Nama Zona</label>
-              <input
-                type="text"
-                id="zone-name"
-                value={zoneName}
-                onChange={(e) => {
-                  setZoneName(e.target.value);
-                  setError(''); // Clear error saat user mengetik
-                }}
-                placeholder="Contoh: Meja 1"
-                autoFocus
-                disabled={saving}
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="zone-type">Tipe</label>
-              <select id="zone-type" value={zoneType} onChange={(e) => setZoneType(e.target.value)} disabled={saving}>
-                <option value="table">Meja</option>
-                <option value="gorengan">Tempat Gorengan</option>
-                <option value="kasir">Kasir</option>
-              </select>
-            </div>
-            <div className="dialog-actions">
-              <button
-                onClick={handleSaveZone}
-                className="save-button"
-                disabled={!zoneName.trim() || saving || !currentRect || !isAdmin}
-                style={{
-                  opacity: !zoneName.trim() || saving || !currentRect || !isAdmin ? 0.5 : 1,
-                  cursor: !zoneName.trim() || saving || !currentRect || !isAdmin ? 'not-allowed' : 'pointer',
-                }}
-                title={!isAdmin ? 'Hanya Admin yang dapat menyimpan zona' : !zoneName.trim() ? 'Nama zona harus diisi' : !currentRect ? 'Zona harus digambar terlebih dahulu' : saving ? 'Menyimpan...' : 'Simpan zona'}>
-                {saving ? 'Menyimpan...' : 'Simpan'}
-              </button>
-              <button onClick={handleCancelSave} className="cancel-button" disabled={saving}>
-                Batal
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Dialog open={showSaveDialog} onClose={handleCancelSave} maxWidth="sm" fullWidth>
+        <DialogTitle>Simpan Zona Baru</DialogTitle>
+        <DialogContent>
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
+              {error}
+            </Alert>
+          )}
+          {!currentRect && (
+            <Alert severity="warning" icon={<Warning />} sx={{ mb: 2 }}>
+              Zona belum digambar. Silakan gambar zona terlebih dahulu dengan klik dan drag pada canvas.
+            </Alert>
+          )}
+          {currentRect && (
+            <Alert severity="success" icon={<CheckCircle />} sx={{ mb: 2 }}>
+              <Typography variant="body2">
+                Zona sudah digambar ({Math.round(currentRect.width)}x{Math.round(currentRect.height)} px)
+              </Typography>
+              <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+                Camera ID: {cameraId} | User: {user?.username} ({user?.role})
+              </Typography>
+            </Alert>
+          )}
+          {!isAdmin && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              Hanya Admin yang dapat menyimpan zona. Role Anda: {user?.role || 'Unknown'}
+            </Alert>
+          )}
+          <TextField
+            fullWidth
+            label="Nama Zona"
+            value={zoneName}
+            onChange={(e) => {
+              setZoneName(e.target.value);
+              setError('');
+            }}
+            placeholder="Contoh: Meja 1"
+            autoFocus
+            disabled={saving}
+            margin="normal"
+            required
+          />
+          <FormControl fullWidth margin="normal" required>
+            <InputLabel>Tipe</InputLabel>
+            <Select value={zoneType} label="Tipe" onChange={(e) => setZoneType(e.target.value)} disabled={saving}>
+              <MenuItem value="table">Meja</MenuItem>
+              <MenuItem value="gorengan">Tempat Gorengan</MenuItem>
+              <MenuItem value="kasir">Kasir</MenuItem>
+              <MenuItem value="dapur">Dapur</MenuItem>
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelSave} disabled={saving}>
+            Batal
+          </Button>
+          <Button onClick={handleSaveZone} variant="contained" disabled={!zoneName.trim() || saving || !currentRect || !isAdmin} startIcon={saving ? <CircularProgress size={16} /> : null}>
+            {saving ? 'Menyimpan...' : 'Simpan'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* List Saved Zones */}
       {savedZones.length > 0 && (
-        <div className="zones-list">
-          <h4>Zona yang Tersimpan</h4>
-          <ul>
+        <Paper elevation={2} sx={{ p: 2, mt: 3 }}>
+          <Typography variant="h6" gutterBottom>
+            Zona yang Tersimpan
+          </Typography>
+          <List>
             {savedZones.map((zone) => (
-              <li key={zone.id}>
-                <div className="zone-item">
-                  <div className="zone-info">
-                    <strong>{zone.name}</strong> - {zone.type} (Koordinat: [{zone.coords?.map((c, i) => (i > 0 ? ', ' : '') + c.toFixed(3)).join('')}])
-                  </div>
-                  <button onClick={() => handleDeleteZone(zone.id)} className="delete-zone-button" title="Hapus zona">
-                    🗑️ Hapus
-                  </button>
-                </div>
-              </li>
+              <ListItem
+                key={zone.id}
+                sx={{
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  mb: 1,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}>
+                <ListItemText
+                  primary={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                      <Typography variant="body1" fontWeight="bold">
+                        {zone.name}
+                      </Typography>
+                      <Chip label={zone.type} size="small" color="primary" variant="outlined" />
+                    </Box>
+                  }
+                  secondary={
+                    <Typography variant="caption" color="text.secondary">
+                      Koordinat: [{zone.coords?.map((c, i) => (i > 0 ? ', ' : '') + c.toFixed(3)).join('')}]
+                    </Typography>
+                  }
+                />
+                <IconButton onClick={() => handleDeleteZone(zone.id)} color="error" size="small" title="Hapus zona" sx={{ ml: 2 }}>
+                  <Delete />
+                </IconButton>
+              </ListItem>
             ))}
-          </ul>
-        </div>
+          </List>
+        </Paper>
       )}
-    </div>
+    </Box>
   );
 };
 

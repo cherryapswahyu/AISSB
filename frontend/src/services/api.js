@@ -243,23 +243,71 @@ export const eventsAPI = {
 };
 
 export const reportsAPI = {
-  getTableOccupancy: async (cameraId = null, startDate = null, endDate = null) => {
+  getTableOccupancy: async (cameraId = null, startDate = null, endDate = null, groupBy = 'day') => {
     const params = new URLSearchParams();
     if (cameraId) params.append('camera_id', cameraId);
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
+    params.append('group_by', groupBy);
 
     const response = await api.get(`/reports/table-occupancy?${params.toString()}`);
     return response.data;
   },
 
-  getQueueReport: async (cameraId = null, startDate = null, endDate = null) => {
+  getQueueReport: async (cameraId = null, startDate = null, endDate = null, groupBy = 'day') => {
     const params = new URLSearchParams();
     if (cameraId) params.append('camera_id', cameraId);
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
+    params.append('group_by', groupBy);
 
     const response = await api.get(`/reports/queue?${params.toString()}`);
+    return response.data;
+  },
+
+  getCustomerReport: async (branchId = null, startDate = null, endDate = null, groupBy = 'day') => {
+    const params = new URLSearchParams();
+    if (branchId) params.append('branch_id', branchId);
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+    params.append('group_by', groupBy);
+    const response = await api.get(`/reports/customers?${params.toString()}`);
+    return response.data;
+  },
+};
+
+export const customerAPI = {
+  getStats: async () => {
+    const response = await api.get('/customers/stats');
+    return response.data;
+  },
+};
+
+export const staffFaceAPI = {
+  upload: async (file, staffName) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('staff_name', staffName);
+    const response = await api.post('/staff-faces/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  list: async () => {
+    const response = await api.get('/staff-faces/');
+    return response.data;
+  },
+
+  delete: async (filename) => {
+    const response = await api.delete(`/staff-faces/${filename}`);
+    return response.data;
+  },
+
+  reload: async () => {
+    const response = await api.post('/staff-faces/reload');
     return response.data;
   },
 };
